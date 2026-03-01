@@ -21,14 +21,16 @@ jobs:
       - name: Compile key python files
         run: |
           python -m py_compile main.py
+          python -m py_compile main_ros2.py
           python -m py_compile scripts/run_pybullet_gui.py
           python -m py_compile scripts/hand_eye_quick_calc.py
           python -m py_compile scripts/serial_ping_once.py
           python -m py_compile scripts/serial_ping_batch.py
           python -m py_compile examples/tactile_mapper_demo.py
+          python -m py_compile src/core/ros2_data_acquisition.py
+          python -m py_compile src/core/ros2_runtime_stubs.py
 
       - name: Check required docs
         run: |
           test -f docs/ros2_refactor_plan.md
           test -f docs/github_code_architecture_style.md
-

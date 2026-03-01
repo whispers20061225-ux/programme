@@ -169,4 +169,5 @@ python main.py --demo tactile_mapping --params "{\"duration\": 10}"
 - `tactile_interfaces`
 - `tactile_bringup`
 - `tactile_ui_bridge`
+- 新增 `main_ros2.py` 作为第 1 阶段 ROS2 监控入口（只读数据链路）。
 - 详细说明见 `docs/phase1_kickoff.md` 与 `docs/ros2_refactor_plan.md`。

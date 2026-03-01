@@ -26,10 +26,12 @@ cd ros2_ws
 colcon build
 source install/setup.bash
 ros2 launch tactile_bringup phase1_fake_chain.launch.py
+
+# in another terminal at repository root
+python main_ros2.py --tactile-topic /tactile/raw --health-topic /system/health
 ```
 
 Expected topics:
 
 - `/tactile/raw`
 - `/system/health`
-
