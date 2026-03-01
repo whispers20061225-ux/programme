@@ -23,4 +23,4 @@ dependencies:
   - torchvision
   - torchaudio
   - pip:
-      - -r requirements_pip.txt
+      - -r requirements.txt
