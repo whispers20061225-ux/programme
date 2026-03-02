@@ -137,6 +137,14 @@ class Ros2ControlThread(QThread):
         control_move_joints_service: str = "/control/arm/move_joints",
         control_reset_emergency_service: str = "/system/reset_emergency",
         command_timeout_sec: float = 5.0,
+        gripper_joint_id: int = 6,
+        gripper_position_min: float = 0.0,
+        gripper_position_max: float = 100.0,
+        gripper_angle_min_deg: float = 0.0,
+        gripper_angle_max_deg: float = 100.0,
+        gripper_default_speed: float = 50.0,
+        gripper_min_duration_ms: int = 180,
+        gripper_max_duration_ms: int = 1200,
     ) -> None:
         super().__init__()
         self.logger = logging.getLogger(__name__)
@@ -149,6 +157,16 @@ class Ros2ControlThread(QThread):
         self.control_move_joints_service = control_move_joints_service
         self.control_reset_emergency_service = control_reset_emergency_service
         self.command_timeout_sec = max(0.2, float(command_timeout_sec))
+        self.gripper_joint_id = max(1, int(gripper_joint_id))
+        self.gripper_position_min = float(gripper_position_min)
+        self.gripper_position_max = float(gripper_position_max)
+        self.gripper_angle_min_deg = float(gripper_angle_min_deg)
+        self.gripper_angle_max_deg = float(gripper_angle_max_deg)
+        self.gripper_default_speed = float(gripper_default_speed)
+        self.gripper_min_duration_ms = max(50, int(gripper_min_duration_ms))
+        self.gripper_max_duration_ms = max(self.gripper_min_duration_ms, int(gripper_max_duration_ms))
+        self._gripper_speed = float(gripper_default_speed)
+        self._gripper_force = 0.0
 
         self._running = False
         self._command_queue: "queue.Queue[Tuple[str, Dict[str, Any]]]" = queue.Queue(maxsize=200)
@@ -521,6 +539,50 @@ class Ros2ControlThread(QThread):
             )
             return
 
+        if command in ("move_gripper", "set_servo_position"):
+            self._execute_gripper_move(params)
+            return
+
+        if command == "set_servo_speed":
+            speed = float(params.get("speed", self._gripper_speed))
+            if not math.isfinite(speed):
+                self.status_updated.emit("error", {"message": "set_servo_speed invalid speed"})
+                return
+            self._gripper_speed = max(1.0, min(100.0, speed))
+            self.status_updated.emit(
+                "speed_set",
+                {
+                    "success": True,
+                    "speed": self._gripper_speed,
+                    "message": f"servo speed set to {self._gripper_speed:.1f}",
+                },
+            )
+            return
+
+        if command == "set_servo_force":
+            force = float(params.get("force", self._gripper_force))
+            if not math.isfinite(force):
+                self.status_updated.emit("error", {"message": "set_servo_force invalid force"})
+                return
+            self._gripper_force = max(0.0, force)
+            self.status_updated.emit(
+                "force_limit_set",
+                {
+                    "success": True,
+                    "force_limit": self._gripper_force,
+                    "message": "force limit cached in ROS2 bridge (no dedicated force service configured)",
+                },
+            )
+            return
+
+        if command in ("calibrate_hardware", "calibrate_3d"):
+            self._execute_calibration(command, params)
+            return
+
+        if command == "auto_grasp":
+            self._execute_auto_grasp_compat(params)
+            return
+
         if command == "emergency_stop":
             success, message = self._set_arm_enabled(False)
             self.status_updated.emit(
@@ -549,6 +611,145 @@ class Ros2ControlThread(QThread):
                 "message": "Command is not migrated to ROS2 phase4 control path.",
             },
         )
+
+    def _execute_gripper_move(self, params: Dict[str, Any]) -> bool:
+        if self._node is None:
+            self.status_updated.emit("error", {"message": "ROS2 control node not ready"})
+            return False
+
+        position = float(params.get("position", 50.0))
+        speed = float(params.get("speed", self._gripper_speed))
+        wait = bool(params.get("wait", False))
+        duration_ms = params.get("duration_ms")
+        if duration_ms is None:
+            duration_ms = self._speed_to_duration_ms(speed)
+        else:
+            duration_ms = max(50, int(duration_ms))
+
+        angle_deg = self._position_to_angle(position)
+        req = MoveArmJoint.Request()
+        req.joint_id = int(self.gripper_joint_id)
+        req.angle_deg = float(angle_deg)
+        req.duration_ms = int(duration_ms)
+        req.wait = wait
+
+        result, error = self._call_service(self._node.move_joint_client, req)
+        if result is None:
+            self.status_updated.emit("move_error", {"error": f"move_gripper failed: {error}"})
+            self.status_updated.emit("error", {"message": f"move_gripper failed: {error}"})
+            return False
+
+        success = bool(result.success)
+        message = str(result.message)
+        if not success:
+            self.status_updated.emit("move_error", {"error": message})
+            self.status_updated.emit("error", {"message": message})
+            return False
+
+        self.status_updated.emit(
+            "moved",
+            {
+                "success": True,
+                "position": float(position),
+                "joint_id": int(result.joint_id),
+                "commanded_angle_deg": float(result.commanded_angle_deg),
+                "message": message,
+            },
+        )
+        return True
+
+    def _execute_calibration(self, command: str, params: Dict[str, Any]) -> None:
+        self.status_updated.emit(
+            "calibrating",
+            {
+                "command": command,
+                "message": "ROS2 calibration started",
+                "calibration_type": str(params.get("type", "all")),
+            },
+        )
+
+        if self._node is None:
+            self.status_updated.emit("calibration_error", {"error": "ROS2 control node not ready"})
+            self.status_updated.emit("error", {"message": "calibration failed: ROS2 control node not ready"})
+            return
+
+        result, error = self._call_service(self._node.home_client, Trigger.Request())
+        if result is None:
+            self.status_updated.emit("calibration_error", {"error": error})
+            self.status_updated.emit("error", {"message": f"calibration failed: {error}"})
+            return
+
+        if not bool(result.success):
+            message = str(result.message)
+            self.status_updated.emit("calibration_error", {"error": message})
+            self.status_updated.emit("error", {"message": f"calibration failed: {message}"})
+            return
+
+        self.status_updated.emit(
+            "calibrated",
+            {
+                "success": True,
+                "message": "ROS2 calibration completed (arm homed)",
+                "calibration_type": str(params.get("type", "all")),
+            },
+        )
+
+    def _execute_auto_grasp_compat(self, params: Dict[str, Any]) -> None:
+        # Phase4 compatibility path: keep UI command functional by executing
+        # the gripper open/close sequence on the mapped arm joint.
+        open_pos = float(params.get("gripper_open_position", 100.0))
+        close_pos = float(params.get("gripper_close_position", 40.0))
+        speed = float(params.get("speed", self._gripper_speed))
+        close_gripper = bool(params.get("close_gripper", True))
+
+        open_ok = self._execute_gripper_move({"position": open_pos, "speed": speed, "wait": True})
+        close_ok = True
+        if close_gripper:
+            close_ok = self._execute_gripper_move({"position": close_pos, "speed": speed, "wait": True})
+
+        success = bool(open_ok and close_ok)
+        if not success:
+            self.status_updated.emit(
+                "error",
+                {"message": "auto_grasp compatibility sequence failed"},
+            )
+
+        self.status_updated.emit(
+            "auto_grasp_result",
+            {
+                "success": success,
+                "mode": "gripper_only",
+                "message": "auto_grasp executed in phase4 compatibility mode (gripper sequence only)"
+                if success
+                else "auto_grasp compatibility sequence failed",
+                "object_cam_mm": params.get("object_cam_mm"),
+            },
+        )
+
+    def _position_to_angle(self, position: float) -> float:
+        pmin = self.gripper_position_min
+        pmax = self.gripper_position_max
+        amin = self.gripper_angle_min_deg
+        amax = self.gripper_angle_max_deg
+
+        if not math.isfinite(position):
+            position = pmin
+        if pmax <= pmin:
+            return float(amin)
+
+        clamped = max(pmin, min(pmax, position))
+        ratio = (clamped - pmin) / (pmax - pmin)
+        return float(amin + ratio * (amax - amin))
+
+    def _speed_to_duration_ms(self, speed: float) -> int:
+        if not math.isfinite(speed):
+            speed = self.gripper_default_speed
+        clamped = max(1.0, min(100.0, float(speed)))
+        ratio = clamped / 100.0
+        duration = self.gripper_max_duration_ms - ratio * (
+            self.gripper_max_duration_ms - self.gripper_min_duration_ms
+        )
+        return int(round(duration))
 
     def _set_arm_enabled(self, enabled: bool) -> Tuple[bool, str]:
         if self._node is None:
@@ -667,6 +868,12 @@ class Ros2DemoManagerStub(QObject):
         "disconnect_stm32",
         "connect_tactile",
         "disconnect_tactile",
+        "calibrate_hardware",
+        "calibrate_3d",
+        "move_gripper",
+        "set_servo_position",
+        "set_servo_speed",
+        "set_servo_force",
         "emergency_stop",
         "reset_system",
         "connect_arm",
@@ -676,6 +883,7 @@ class Ros2DemoManagerStub(QObject):
         "arm_home",
         "move_arm_joint",
         "move_arm_joints",
+        "auto_grasp",
     }
 
     def __init__(self, config: Any, data_acquisition: Any, control_thread: Any):
