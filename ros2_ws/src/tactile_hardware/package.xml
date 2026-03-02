@@ -1,20 +1,17 @@
 <?xml version="1.0"?>
 <package format="3">
-  <name>tactile_bringup</name>
+  <name>tactile_hardware</name>
   <version>0.1.0</version>
-  <description>Bringup and fake chain launch for phase 1 migration.</description>
+  <description>Hardware driver nodes for tactile system phase 2 migration.</description>
   <maintainer email="whisp@users.noreply.github.com">whisp</maintainer>
   <license>MIT</license>
 
   <buildtool_depend>ament_python</buildtool_depend>
 
-  <depend>launch</depend>
-  <depend>launch_ros</depend>
   <depend>rclpy</depend>
   <depend>std_msgs</depend>
+  <depend>std_srvs</depend>
   <depend>tactile_interfaces</depend>
-  <depend>tactile_hardware</depend>
-  <depend>tactile_ui_bridge</depend>
 
   <export>
     <build_type>ament_python</build_type>

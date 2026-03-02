@@ -13,6 +13,9 @@ find_package(std_msgs REQUIRED)
 rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/TactileRaw.msg"
   "msg/SystemHealth.msg"
+  "msg/ArmState.msg"
+  "msg/GripperState.msg"
+  "srv/SetGripperForce.srv"
   DEPENDENCIES builtin_interfaces std_msgs
 )
 

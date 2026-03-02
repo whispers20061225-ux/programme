@@ -10,8 +10,20 @@ setup(
     data_files=[
         ("share/ament_index/resource_index/packages", [f"resource/{package_name}"]),
         (f"share/{package_name}", ["package.xml"]),
-        (f"share/{package_name}/launch", ["launch/phase1_fake_chain.launch.py"]),
-        (f"share/{package_name}/config", ["config/phase1_fake_chain.yaml"]),
+        (
+            f"share/{package_name}/launch",
+            [
+                "launch/phase1_fake_chain.launch.py",
+                "launch/phase2_hardware.launch.py",
+            ],
+        ),
+        (
+            f"share/{package_name}/config",
+            [
+                "config/phase1_fake_chain.yaml",
+                "config/phase2_hardware.yaml",
+            ],
+        ),
     ],
     install_requires=["setuptools"],
     zip_safe=True,

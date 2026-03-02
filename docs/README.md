@@ -24,4 +24,5 @@ Notes:
 - `ros2_refactor_plan.md`: phased ROS2 refactor plan with rollback and GitHub sync strategy.
 - `github_code_architecture_style.md`: GitHub-side architecture style during refactor (branches, PR, release, repo layout).
 - `phase1_kickoff.md`: concrete phase 1 implementation notes and run/verify steps.
+- `phase2_hardware_kickoff.md`: phase 2 hardware-layer node migration notes and run/verify steps.
 - `ros2_refactor_plan.md` now includes SmolVLA policy migration and legacy AI fallback strategy.

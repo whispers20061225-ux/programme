@@ -1,0 +1,47 @@
+tactile_sensor_node:
+  ros__parameters:
+    publish_rate_hz: 30.0
+    rows: 3
+    cols: 3
+    use_simulation: true
+    sensor_port: "SIM_SENSOR"
+    sensor_baudrate: 115200
+    sensor_timeout: 0.1
+    tactile_topic: "/tactile/raw"
+    health_topic: "/system/health"
+    reconnect_interval_sec: 2.0
+
+arm_driver_node:
+  ros__parameters:
+    state_rate_hz: 20.0
+    auto_enable: false
+    arm_serial_port: "COM5"
+    arm_baudrate: 115200
+    arm_timeout: 1.0
+    arm_startup_delay: 1.0
+    home_duration_ms: 1500
+    home_joint_angles: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    state_topic: "/arm/state"
+    health_topic: "/system/health"
+
+gripper_driver_node:
+  ros__parameters:
+    state_rate_hz: 20.0
+    auto_enable: true
+    use_simulation: true
+    servo_port: "SIM_GRIPPER"
+    servo_baudrate: 115200
+    servo_timeout: 1.0
+    servo_min_angle: 0
+    servo_max_angle: 180
+    servo_home_position: 90
+    servo_speed: 50
+    servo_max_force: 10.0
+    state_topic: "/gripper/state"
+    health_topic: "/system/health"
+
+tactile_ui_subscriber:
+  ros__parameters:
+    tactile_topic: "/tactile/raw"
+    health_topic: "/system/health"
+    report_interval_sec: 2.0
