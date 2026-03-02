@@ -26,4 +26,5 @@ Notes:
 - `phase1_kickoff.md`: concrete phase 1 implementation notes and run/verify steps.
 - `phase2_hardware_kickoff.md`: phase 2 hardware-layer node migration notes and run/verify steps.
 - `phase3_control_kickoff.md`: phase 3 control-layer migration notes (`/control/arm/*`, `MoveArmJoints` action, emergency reset).
+- `phase4_ui_bridge_kickoff.md`: phase 4 UI bridge migration notes (`main_ros2.py` + `Ros2ControlThread`, control-mode switch).
 - `ros2_refactor_plan.md` now includes SmolVLA policy migration and legacy AI fallback strategy.

@@ -1,10 +1,11 @@
-# ROS2 Workspace (Phase 1 + Phase 2 + Phase 3)
+# ROS2 Workspace (Phase 1 + Phase 2 + Phase 3 + Phase 4)
 
 This workspace now includes:
 
 - phase 1: minimal fake tactile chain for GUI read-only validation
 - phase 2: hardware-layer ROS2 nodes for tactile sensor and arm
 - phase 3: control-layer ROS2 node with safety gate and action/service APIs
+- phase 4: GUI command bridge to ROS2 control-layer services
 
 ## Workspace layout
 
@@ -87,4 +88,27 @@ ros2 service call /control/arm/move_joint tactile_interfaces/srv/MoveArmJoint "{
 ros2 service call /control/arm/move_joints tactile_interfaces/srv/MoveArmJoints "{joint_ids: [1,2,3], angles_deg: [15.0, 30.0, 20.0], duration_ms: 1200, wait: true}"
 ros2 action send_goal /control/arm/move_joints_action tactile_interfaces/action/MoveArmJoints "{joint_ids: [1,2,3], angles_deg: [15.0, 30.0, 20.0], duration_ms: 1200, wait: true}" --feedback
 ros2 service call /system/reset_emergency std_srvs/srv/Trigger "{}"
+```
+
+## Run phase 4 (GUI bridge)
+
+Phase 4 keeps launch topology from phase 3 and upgrades `main_ros2.py`
+from monitor mode to ROS2 control mode.
+
+Terminal A:
+
+```bash
+ros2 launch tactile_bringup phase3_control.launch.py
+```
+
+Terminal B (repository root):
+
+```bash
+python main_ros2.py --control-mode ros2
+```
+
+Fallback mode:
+
+```bash
+python main_ros2.py --control-mode stub
 ```
