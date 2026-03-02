@@ -22,7 +22,6 @@ setup(
         "console_scripts": [
             "tactile_sensor_node = tactile_hardware.tactile_sensor_node:main",
             "arm_driver_node = tactile_hardware.arm_driver_node:main",
-            "gripper_driver_node = tactile_hardware.gripper_driver_node:main",
         ],
     },
 )

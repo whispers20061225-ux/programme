@@ -16,7 +16,6 @@ This file tracks the second implementation step of the ROS2 migration plan.
   - `config/phase2_hardware.yaml`
 - Current default phase 2 chain is arm-centric:
   - only `tactile_sensor_node + arm_driver_node + tactile_ui_subscriber`
-  - no standalone `gripper_driver_node` dependency for UI bringup
 - Kept phase 1 and legacy entrypoints untouched:
   - `main.py` unchanged
   - `main_ros2.py` unchanged

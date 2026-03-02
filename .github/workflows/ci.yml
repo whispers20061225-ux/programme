@@ -32,7 +32,6 @@ jobs:
           python -m py_compile ros2_ws/src/tactile_hardware/tactile_hardware/legacy_runtime.py
           python -m py_compile ros2_ws/src/tactile_hardware/tactile_hardware/tactile_sensor_node.py
           python -m py_compile ros2_ws/src/tactile_hardware/tactile_hardware/arm_driver_node.py
-          python -m py_compile ros2_ws/src/tactile_hardware/tactile_hardware/gripper_driver_node.py
 
       - name: Check required docs
         run: |
