@@ -37,22 +37,57 @@ def _configure_matplotlib_runtime() -> None:
     logging.getLogger("matplotlib.font_manager").setLevel(logging.ERROR)
 
     try:
-        from matplotlib import rcParams
+        from matplotlib import font_manager, rcParams
 
-        rcParams["font.sans-serif"] = [
+        preferred_names = [
             "Noto Sans CJK SC",
+            "Noto Sans CJK TC",
+            "Noto Sans CJK JP",
             "WenQuanYi Micro Hei",
+            "WenQuanYi Zen Hei",
             "SimHei",
             "Microsoft YaHei",
             "PingFang SC",
             "STHeiti",
             "Arial Unicode MS",
-            "DejaVu Sans",
         ]
+        candidate_font_paths = [
+            Path("/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc"),
+            Path("/usr/share/fonts/opentype/noto/NotoSansCJKSC-Regular.otf"),
+            Path("/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc"),
+            Path("/usr/share/fonts/truetype/wqy/wqy-microhei.ttc"),
+            Path("/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc"),
+        ]
+
+        loaded_names = []
+        for font_path in candidate_font_paths:
+            if not font_path.exists():
+                continue
+            try:
+                font_manager.fontManager.addfont(str(font_path))
+                font_name = font_manager.FontProperties(fname=str(font_path)).get_name()
+                if font_name and font_name not in loaded_names:
+                    loaded_names.append(font_name)
+            except Exception:
+                continue
+
+        available_names = {font.name for font in font_manager.fontManager.ttflist}
+        selected_fonts = loaded_names + [name for name in preferred_names if name in available_names]
+        if not selected_fonts:
+            selected_fonts = ["DejaVu Sans"]
+            logging.getLogger(__name__).warning(
+                "No CJK font detected for Matplotlib; install `fonts-noto-cjk` for Chinese labels."
+            )
+
+        # Keep order while de-duplicating.
+        selected_fonts = list(dict.fromkeys(selected_fonts))
+        rcParams["font.family"] = selected_fonts
+        rcParams["font.sans-serif"] = selected_fonts + ["DejaVu Sans"]
         rcParams["axes.unicode_minus"] = False
-    except Exception:
+        logging.getLogger(__name__).info("Matplotlib primary font: %s", selected_fonts[0])
+    except Exception as exc:
         # Matplotlib may be unavailable in some stripped runtime environments.
-        pass
+        logging.getLogger(__name__).warning("Failed to configure Matplotlib fonts: %s", exc)
 
 
 class Ros2PhaseApp:

@@ -44,7 +44,9 @@ chinese_fonts = [
     'DejaVu Sans',       # Linux default fallback
 ]
 
-rcParams['font.sans-serif'] = chinese_fonts
+# Merge global runtime font selection with widget defaults.
+existing_fonts = list(rcParams.get('font.sans-serif', []))
+rcParams['font.sans-serif'] = list(dict.fromkeys(chinese_fonts + existing_fonts))
 rcParams['axes.unicode_minus'] = False
 
 from PyQt5.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QComboBox, QGroupBox, QGridLayout, QSlider
