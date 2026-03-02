@@ -15,12 +15,17 @@ arm_driver_node:
   ros__parameters:
     state_rate_hz: 20.0
     auto_enable: false
+    arm_num_joints: 6
     arm_serial_port: "COM5"
     arm_baudrate: 115200
     arm_timeout: 1.0
     arm_startup_delay: 1.0
     home_duration_ms: 1500
     home_joint_angles: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    command_default_duration_ms: 1000
+    enforce_angle_limits: true
+    min_angle_deg: -180.0
+    max_angle_deg: 270.0
     state_topic: "/arm/state"
     health_topic: "/system/health"
 

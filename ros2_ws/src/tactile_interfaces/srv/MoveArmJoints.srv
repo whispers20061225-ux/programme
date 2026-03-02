@@ -1,0 +1,9 @@
+uint8[] joint_ids
+float32[] angles_deg
+int32 duration_ms
+bool wait
+---
+bool success
+string message
+uint8[] joint_ids
+float32[] commanded_angles_deg

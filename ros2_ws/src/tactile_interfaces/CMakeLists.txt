@@ -16,6 +16,8 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/ArmState.msg"
   "msg/GripperState.msg"
   "srv/SetGripperForce.srv"
+  "srv/MoveArmJoint.srv"
+  "srv/MoveArmJoints.srv"
   DEPENDENCIES builtin_interfaces std_msgs
 )
 

@@ -1,0 +1,9 @@
+uint8 joint_id
+float32 angle_deg
+int32 duration_ms
+bool wait
+---
+bool success
+string message
+uint8 joint_id
+float32 commanded_angle_deg

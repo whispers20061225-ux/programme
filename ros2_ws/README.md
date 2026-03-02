@@ -55,4 +55,6 @@ Useful service calls:
 ```bash
 ros2 service call /arm/enable std_srvs/srv/SetBool "{data: true}"
 ros2 service call /arm/home std_srvs/srv/Trigger "{}"
+ros2 service call /arm/move_joint tactile_interfaces/srv/MoveArmJoint "{joint_id: 1, angle_deg: 30.0, duration_ms: 1200, wait: true}"
+ros2 service call /arm/move_joints tactile_interfaces/srv/MoveArmJoints "{joint_ids: [1,2,3], angles_deg: [20.0, 35.0, 15.0], duration_ms: 1500, wait: true}"
 ```

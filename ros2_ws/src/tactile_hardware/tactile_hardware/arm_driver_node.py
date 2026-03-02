@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from typing import Dict, Optional
+import math
+from typing import Dict, List, Optional, Tuple
 
 import rclpy
 from rclpy.node import Node
@@ -8,6 +9,7 @@ from rclpy.qos import HistoryPolicy, QoSProfile, ReliabilityPolicy
 from std_srvs.srv import SetBool, Trigger
 
 from tactile_interfaces.msg import ArmState, SystemHealth
+from tactile_interfaces.srv import MoveArmJoint, MoveArmJoints
 
 from .legacy_runtime import ensure_legacy_import_paths
 
@@ -24,6 +26,11 @@ class ArmDriverNode(Node):
         self.declare_parameter("arm_startup_delay", 1.0)
         self.declare_parameter("home_duration_ms", 1500)
         self.declare_parameter("home_joint_angles", [0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
+        self.declare_parameter("arm_num_joints", 6)
+        self.declare_parameter("command_default_duration_ms", 1000)
+        self.declare_parameter("enforce_angle_limits", True)
+        self.declare_parameter("min_angle_deg", -180.0)
+        self.declare_parameter("max_angle_deg", 270.0)
         self.declare_parameter("state_topic", "/arm/state")
         self.declare_parameter("health_topic", "/system/health")
 
@@ -34,8 +41,23 @@ class ArmDriverNode(Node):
         self.arm_timeout = float(self.get_parameter("arm_timeout").value)
         self.arm_startup_delay = float(self.get_parameter("arm_startup_delay").value)
         self.home_duration_ms = int(self.get_parameter("home_duration_ms").value)
+        self.arm_num_joints = int(self.get_parameter("arm_num_joints").value)
+        self.command_default_duration_ms = int(
+            self.get_parameter("command_default_duration_ms").value
+        )
+        self.enforce_angle_limits = bool(self.get_parameter("enforce_angle_limits").value)
+        self.min_angle_deg = float(self.get_parameter("min_angle_deg").value)
+        self.max_angle_deg = float(self.get_parameter("max_angle_deg").value)
         self.state_topic = str(self.get_parameter("state_topic").value)
         self.health_topic = str(self.get_parameter("health_topic").value)
+
+        if self.arm_num_joints <= 0:
+            self.arm_num_joints = 6
+        if self.min_angle_deg > self.max_angle_deg:
+            self.get_logger().warn(
+                "min_angle_deg > max_angle_deg, swapping values for safety"
+            )
+            self.min_angle_deg, self.max_angle_deg = self.max_angle_deg, self.min_angle_deg
 
         state_qos = QoSProfile(
             history=HistoryPolicy.KEEP_LAST,
@@ -53,6 +75,12 @@ class ArmDriverNode(Node):
 
         self.enable_srv = self.create_service(SetBool, "/arm/enable", self._on_enable)
         self.home_srv = self.create_service(Trigger, "/arm/home", self._on_home)
+        self.move_joint_srv = self.create_service(
+            MoveArmJoint, "/arm/move_joint", self._on_move_joint
+        )
+        self.move_joints_srv = self.create_service(
+            MoveArmJoints, "/arm/move_joints", self._on_move_joints
+        )
 
         self._project_root = ensure_legacy_import_paths()
         self._arm = None
@@ -69,7 +97,8 @@ class ArmDriverNode(Node):
 
         self.get_logger().info(
             "arm_driver_node started: "
-            f"state_topic={self.state_topic}, auto_enable={self.auto_enable}"
+            f"state_topic={self.state_topic}, auto_enable={self.auto_enable}, "
+            f"num_joints={self.arm_num_joints}"
         )
 
     @property
@@ -162,6 +191,147 @@ class ArmDriverNode(Node):
             self._last_error = str(exc)
             response.success = False
             response.message = f"arm home failed: {exc}"
+            return response
+
+    def _validate_joint_id(self, joint_id: int) -> Tuple[bool, str]:
+        if joint_id < 1 or joint_id > self.arm_num_joints:
+            return (
+                False,
+                f"joint_id out of range: {joint_id} (valid 1..{self.arm_num_joints})",
+            )
+        return True, ""
+
+    def _validate_angle(self, angle_deg: float) -> Tuple[bool, str]:
+        if not math.isfinite(angle_deg):
+            return False, "angle_deg is not finite"
+        if self.enforce_angle_limits and (
+            angle_deg < self.min_angle_deg or angle_deg > self.max_angle_deg
+        ):
+            return (
+                False,
+                f"angle_deg out of range: {angle_deg} "
+                f"(valid {self.min_angle_deg}..{self.max_angle_deg})",
+            )
+        return True, ""
+
+    def _resolve_duration(self, duration_ms: int) -> Optional[int]:
+        if duration_ms > 0:
+            return int(duration_ms)
+        if self.command_default_duration_ms > 0:
+            return int(self.command_default_duration_ms)
+        return None
+
+    def _on_move_joint(
+        self, request: MoveArmJoint.Request, response: MoveArmJoint.Response
+    ) -> MoveArmJoint.Response:
+        response.joint_id = int(request.joint_id)
+        response.commanded_angle_deg = float(request.angle_deg)
+
+        if not self.connected:
+            response.success = False
+            response.message = "arm is not enabled"
+            return response
+
+        joint_id = int(request.joint_id)
+        ok, message = self._validate_joint_id(joint_id)
+        if not ok:
+            response.success = False
+            response.message = message
+            return response
+
+        angle_deg = float(request.angle_deg)
+        ok, message = self._validate_angle(angle_deg)
+        if not ok:
+            response.success = False
+            response.message = message
+            return response
+
+        duration = self._resolve_duration(int(request.duration_ms))
+        wait = bool(request.wait)
+
+        try:
+            success = bool(
+                self._arm.move_joint(
+                    joint_id,
+                    angle_deg,
+                    duration=duration,
+                    wait=wait,
+                )
+            )
+            response.success = success
+            response.message = (
+                f"joint {joint_id} moved to {angle_deg:.2f} deg"
+                if success
+                else f"move_joint failed for joint {joint_id}"
+            )
+            if success:
+                self._last_error = ""
+            return response
+        except Exception as exc:
+            self._last_error = str(exc)
+            response.success = False
+            response.message = f"move_joint exception: {exc}"
+            return response
+
+    def _on_move_joints(
+        self, request: MoveArmJoints.Request, response: MoveArmJoints.Response
+    ) -> MoveArmJoints.Response:
+        joint_ids: List[int] = [int(v) for v in list(request.joint_ids)]
+        angles_deg: List[float] = [float(v) for v in list(request.angles_deg)]
+
+        response.joint_ids = joint_ids
+        response.commanded_angles_deg = angles_deg
+
+        if not self.connected:
+            response.success = False
+            response.message = "arm is not enabled"
+            return response
+
+        if not joint_ids:
+            response.success = False
+            response.message = "joint_ids is empty"
+            return response
+        if len(joint_ids) != len(angles_deg):
+            response.success = False
+            response.message = "joint_ids and angles_deg size mismatch"
+            return response
+        if len(set(joint_ids)) != len(joint_ids):
+            response.success = False
+            response.message = "joint_ids contains duplicates"
+            return response
+
+        positions: Dict[int, float] = {}
+        for joint_id, angle_deg in zip(joint_ids, angles_deg):
+            ok, message = self._validate_joint_id(joint_id)
+            if not ok:
+                response.success = False
+                response.message = message
+                return response
+            ok, message = self._validate_angle(angle_deg)
+            if not ok:
+                response.success = False
+                response.message = message
+                return response
+            positions[joint_id] = angle_deg
+
+        duration = self._resolve_duration(int(request.duration_ms))
+        wait = bool(request.wait)
+
+        try:
+            success = bool(self._arm.move_joints(positions=positions, duration=duration, wait=wait))
+            response.success = success
+            response.message = (
+                f"moved {len(positions)} joints"
+                if success
+                else "move_joints failed"
+            )
+            if success:
+                self._last_error = ""
+            return response
+        except Exception as exc:
+            self._last_error = str(exc)
+            response.success = False
+            response.message = f"move_joints exception: {exc}"
             return response
 
     def _publish_state(self) -> None:
