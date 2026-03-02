@@ -5,6 +5,7 @@ from typing import List, Optional
 
 import rclpy
 from rclpy.node import Node
+from rclpy.qos import HistoryPolicy, QoSProfile, ReliabilityPolicy
 
 from tactile_interfaces.msg import SystemHealth, TactileRaw
 
@@ -44,8 +45,19 @@ class TactileUiSubscriber(Node):
         self._message_count = 0
         self._last_report = time.time()
 
-        self.create_subscription(TactileRaw, tactile_topic, self._on_tactile, 10)
-        self.create_subscription(SystemHealth, health_topic, self._on_health, 10)
+        tactile_qos = QoSProfile(
+            reliability=ReliabilityPolicy.BEST_EFFORT,
+            history=HistoryPolicy.KEEP_LAST,
+            depth=20,
+        )
+        health_qos = QoSProfile(
+            reliability=ReliabilityPolicy.RELIABLE,
+            history=HistoryPolicy.KEEP_LAST,
+            depth=10,
+        )
+
+        self.create_subscription(TactileRaw, tactile_topic, self._on_tactile, tactile_qos)
+        self.create_subscription(SystemHealth, health_topic, self._on_health, health_qos)
 
         self.get_logger().info(
             f"UI bridge subscribed: tactile_topic={tactile_topic}, health_topic={health_topic}"
