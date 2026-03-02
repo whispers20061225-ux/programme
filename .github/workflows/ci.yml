@@ -32,9 +32,11 @@ jobs:
           python -m py_compile ros2_ws/src/tactile_hardware/tactile_hardware/legacy_runtime.py
           python -m py_compile ros2_ws/src/tactile_hardware/tactile_hardware/tactile_sensor_node.py
           python -m py_compile ros2_ws/src/tactile_hardware/tactile_hardware/arm_driver_node.py
+          python -m py_compile ros2_ws/src/tactile_control/tactile_control/arm_control_node.py
 
       - name: Check required docs
         run: |
           test -f docs/ros2_refactor_plan.md
           test -f docs/github_code_architecture_style.md
           test -f docs/phase2_hardware_kickoff.md
+          test -f docs/phase3_control_kickoff.md

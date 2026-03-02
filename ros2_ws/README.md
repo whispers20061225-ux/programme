@@ -1,9 +1,10 @@
-# ROS2 Workspace (Phase 1 + Phase 2)
+# ROS2 Workspace (Phase 1 + Phase 2 + Phase 3)
 
 This workspace now includes:
 
 - phase 1: minimal fake tactile chain for GUI read-only validation
 - phase 2: hardware-layer ROS2 nodes for tactile sensor and arm
+- phase 3: control-layer ROS2 node with safety gate and action/service APIs
 
 ## Workspace layout
 
@@ -12,6 +13,7 @@ ros2_ws/
   src/
     tactile_interfaces/
     tactile_hardware/
+    tactile_control/
     tactile_bringup/
     tactile_ui_bridge/
 ```
@@ -57,4 +59,32 @@ ros2 service call /arm/enable std_srvs/srv/SetBool "{data: true}"
 ros2 service call /arm/home std_srvs/srv/Trigger "{}"
 ros2 service call /arm/move_joint tactile_interfaces/srv/MoveArmJoint "{joint_id: 1, angle_deg: 30.0, duration_ms: 1200, wait: true}"
 ros2 service call /arm/move_joints tactile_interfaces/srv/MoveArmJoints "{joint_ids: [1,2,3], angles_deg: [20.0, 35.0, 15.0], duration_ms: 1500, wait: true}"
+```
+
+## Run phase 3
+
+```bash
+ros2 launch tactile_bringup phase3_control.launch.py
+```
+
+Phase 3 adds `arm_control_node` between UI/task side and hardware services:
+
+- control services:
+  - `/control/arm/enable`
+  - `/control/arm/home`
+  - `/control/arm/move_joint`
+  - `/control/arm/move_joints`
+- control action:
+  - `/control/arm/move_joints_action`
+- emergency reset:
+  - `/system/reset_emergency`
+
+Useful control-layer calls:
+
+```bash
+ros2 service call /control/arm/enable std_srvs/srv/SetBool "{data: true}"
+ros2 service call /control/arm/move_joint tactile_interfaces/srv/MoveArmJoint "{joint_id: 1, angle_deg: 25.0, duration_ms: 1000, wait: true}"
+ros2 service call /control/arm/move_joints tactile_interfaces/srv/MoveArmJoints "{joint_ids: [1,2,3], angles_deg: [15.0, 30.0, 20.0], duration_ms: 1200, wait: true}"
+ros2 action send_goal /control/arm/move_joints_action tactile_interfaces/action/MoveArmJoints "{joint_ids: [1,2,3], angles_deg: [15.0, 30.0, 20.0], duration_ms: 1200, wait: true}" --feedback
+ros2 service call /system/reset_emergency std_srvs/srv/Trigger "{}"
 ```

@@ -6,6 +6,7 @@ if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
 endif()
 
 find_package(ament_cmake REQUIRED)
+find_package(action_msgs REQUIRED)
 find_package(rosidl_default_generators REQUIRED)
 find_package(builtin_interfaces REQUIRED)
 find_package(std_msgs REQUIRED)
@@ -15,10 +16,11 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/SystemHealth.msg"
   "msg/ArmState.msg"
   "msg/GripperState.msg"
+  "action/MoveArmJoints.action"
   "srv/SetGripperForce.srv"
   "srv/MoveArmJoint.srv"
   "srv/MoveArmJoints.srv"
-  DEPENDENCIES builtin_interfaces std_msgs
+  DEPENDENCIES action_msgs builtin_interfaces std_msgs
 )
 
 ament_export_dependencies(rosidl_default_runtime)
