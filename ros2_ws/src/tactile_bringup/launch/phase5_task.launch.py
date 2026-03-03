@@ -1,13 +1,20 @@
+from launch.actions import DeclareLaunchArgument
 from launch import LaunchDescription
-from launch.substitutions import PathJoinSubstitution
+from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import Node
 from launch_ros.substitutions import FindPackageShare
 
 
 def generate_launch_description() -> LaunchDescription:
-    param_file = PathJoinSubstitution(
+    default_param_file = PathJoinSubstitution(
         [FindPackageShare("tactile_bringup"), "config", "phase5_task.yaml"]
     )
+    param_file_arg = DeclareLaunchArgument(
+        "param_file",
+        default_value=default_param_file,
+        description="Path to phase5 ROS2 parameter YAML",
+    )
+    param_file = LaunchConfiguration("param_file")
 
     tactile_sensor_node = Node(
         package="tactile_hardware",
@@ -51,6 +58,7 @@ def generate_launch_description() -> LaunchDescription:
 
     return LaunchDescription(
         [
+            param_file_arg,
             tactile_sensor_node,
             arm_driver_node,
             arm_control_node,

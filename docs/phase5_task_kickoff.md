@@ -26,6 +26,12 @@ This file tracks the phase 5 migration scope: moving demo orchestration to ROS2 
     - `resume_demo` -> `/task/resume_demo`
     - `stop_demo` -> `/task/stop_demo`
   - Demo feedback/result is re-emitted to existing GUI status channel (`demo_starting/demo_started/demo_progress/demo_completed/demo_stopped/demo_failed`).
+- Runtime stabilization:
+  - ROS2 UI bridge now infers `simulation` status dynamically from node health messages instead of hard-coded flags.
+  - Added hardware parameter profile:
+    - `ros2_ws/src/tactile_bringup/config/phase5_task_hardware.yaml`
+  - Added launch argument for config switching:
+    - `ros2 launch tactile_bringup phase5_task.launch.py param_file:=<path-to-yaml>`
 
 ## Runtime verify commands
 
@@ -40,6 +46,12 @@ cd ros2_ws
 colcon build --symlink-install
 source install/setup.bash
 ros2 launch tactile_bringup phase5_task.launch.py
+```
+
+Terminal A (real hardware profile):
+
+```bash
+ros2 launch tactile_bringup phase5_task.launch.py param_file:=/home/zhuyiwei/programme/programme/ros2_ws/src/tactile_bringup/config/phase5_task_hardware.yaml
 ```
 
 Terminal B:
@@ -73,3 +85,4 @@ ros2 action send_goal /task/execute_demo tactile_interfaces/action/ExecuteDemo "
   - grasp-style demos can optionally trigger open/close joint sequences through `/control/arm/move_joints`.
 - Legacy `main.py` remains unchanged for rollback safety.
 - SmolVLA (or other VLA backend) remains phase 6 scope.
+- In hardware mode, update serial ports in `phase5_task_hardware.yaml` to your actual `/dev/tty*` devices before launch.

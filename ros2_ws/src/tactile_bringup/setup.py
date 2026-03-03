@@ -26,6 +26,7 @@ setup(
                 "config/phase2_hardware.yaml",
                 "config/phase3_control.yaml",
                 "config/phase5_task.yaml",
+                "config/phase5_task_hardware.yaml",
             ],
         ),
     ],

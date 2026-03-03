@@ -34,6 +34,6 @@ Notes:
 ## Current Refactor Snapshot (2026-03-03)
 
 - `main` contains phase 4 merged baseline.
-- `develop` now includes phase 5 kickoff implementation.
+- `develop` includes phase 5 task orchestration implementation and hardware-profile bringup updates.
 - GUI demo commands are routed to task Action/Services in ROS2 mode.
 - Next target: phase 5 stabilization and phase 6 policy backend migration (SmolVLA integration).

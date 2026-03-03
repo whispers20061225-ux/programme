@@ -196,6 +196,8 @@ class Ros2ControlThread(QThread):
         self._arm_homed = False
         self._stm32_connected = False
         self._tactile_connected = False
+        self._servo_simulation = False
+        self._sensor_simulation = False
         self._arm_snapshot: Dict[str, Any] = {
             "connected": False,
             "enabled": False,
@@ -321,11 +323,11 @@ class Ros2ControlThread(QThread):
                 "health": dict(self._last_health),
                 "servo": {
                     "connected": bool(self._stm32_connected),
-                    "simulation": True,
+                    "simulation": bool(self._servo_simulation),
                 },
                 "sensor": {
                     "connected": bool(self._tactile_connected),
-                    "simulation": True,
+                    "simulation": bool(self._sensor_simulation),
                 },
                 "demo": {
                     "running": bool(self._demo_goal_handle is not None),
@@ -354,7 +356,8 @@ class Ros2ControlThread(QThread):
 
         with self._lock:
             self._arm_snapshot = snapshot
-            if not snapshot["connected"]:
+            self._stm32_connected = bool(snapshot["connected"])
+            if not self._stm32_connected:
                 self._arm_enabled = False
 
         self.status_updated.emit("arm_state", snapshot)
@@ -368,6 +371,26 @@ class Ros2ControlThread(QThread):
         }
         with self._lock:
             self._last_health = health
+
+        node_name = str(health["node_name"])
+        message = str(health["message"]).lower()
+        healthy = bool(health["healthy"])
+        level = int(health["level"])
+
+        if node_name == "tactile_sensor_node":
+            sensor_connected = bool(healthy and level <= 1)
+            sensor_simulation = "simulation" in message
+            with self._lock:
+                self._tactile_connected = sensor_connected
+                self._sensor_simulation = sensor_simulation
+
+        if node_name == "arm_driver_node":
+            arm_connected = bool(healthy and "disconnected" not in message)
+            with self._lock:
+                self._stm32_connected = arm_connected
+                # Arm driver node is always hardware-facing in current phase.
+                self._servo_simulation = False
+
         if (not health["healthy"]) and health["level"] >= 2:
             self.error_occurred.emit("health_error", health)
             self.status_updated.emit(
@@ -1018,7 +1041,7 @@ class Ros2ControlThread(QThread):
             {
                 "success": bool(success),
                 "connected": bool(connected),
-                "simulation": True,
+                "simulation": bool(self._servo_simulation),
                 "message": str(message),
             },
         )
@@ -1032,7 +1055,7 @@ class Ros2ControlThread(QThread):
             {
                 "success": bool(success),
                 "connected": bool(connected),
-                "simulation": True,
+                "simulation": bool(self._sensor_simulation),
                 "message": str(message),
             },
         )
@@ -1215,8 +1238,8 @@ class Ros2DemoManagerStub(QObject):
             latest = self.data_acquisition.get_latest_data()
 
         arm_status: Dict[str, Any] = {"connected": False, "enabled": False, "homed": False}
-        servo_status: Dict[str, Any] = {"connected": False, "simulation": True}
-        sensor_status: Dict[str, Any] = {"connected": False, "simulation": True}
+        servo_status: Dict[str, Any] = {"connected": False, "simulation": False}
+        sensor_status: Dict[str, Any] = {"connected": False, "simulation": False}
         demo_status: Dict[str, Any] = {"running": False, "name": ""}
         if self.control_thread is not None and hasattr(self.control_thread, "get_status"):
             maybe = self.control_thread.get_status()
@@ -1232,11 +1255,11 @@ class Ros2DemoManagerStub(QObject):
             "mode": "ros2_phase5",
             "servo": {
                 "connected": bool(servo_status.get("connected", False)),
-                "simulation": bool(servo_status.get("simulation", True)),
+                "simulation": bool(servo_status.get("simulation", False)),
             },
             "sensor": {
                 "connected": tactile_connected,
-                "simulation": bool(sensor_status.get("simulation", True)),
+                "simulation": bool(sensor_status.get("simulation", False)),
                 "latest_timestamp": getattr(latest, "timestamp", None),
             },
             "arm": arm_status,

@@ -16,8 +16,13 @@ All notable project updates are recorded in this file.
   - Added bringup and config:
     - `phase5_task.launch.py`
     - `phase5_task.yaml`
+    - `phase5_task_hardware.yaml`
+  - Added launch argument for config selection:
+    - `ros2 launch tactile_bringup phase5_task.launch.py param_file:=...`
+  - Removed hard-coded simulation flag in ROS2 UI bridge:
+    - STM32/tactile `simulation` status now derives from ROS2 health messages.
 - Next planned step:
-  - Phase 5 stabilization and acceptance in VM/hardware.
+  - Phase 5 VM/hardware acceptance checklist execution.
   - Phase 6 policy backend migration (SmolVLA integration).
 
 ## [2026-03-03] - Phase 4 merged to `main`
