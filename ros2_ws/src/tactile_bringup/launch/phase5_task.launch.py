@@ -7,7 +7,7 @@ from launch_ros.substitutions import FindPackageShare
 
 def generate_launch_description() -> LaunchDescription:
     default_param_file = PathJoinSubstitution(
-        [FindPackageShare("tactile_bringup"), "config", "phase5_task.yaml"]
+        [FindPackageShare("tactile_bringup"), "config", "phase5_task_hardware.yaml"]
     )
     param_file_arg = DeclareLaunchArgument(
         "param_file",

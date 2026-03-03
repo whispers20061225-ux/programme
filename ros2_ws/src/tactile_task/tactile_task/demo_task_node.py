@@ -126,11 +126,9 @@ class DemoTaskNode(Node):
         self._stop_requested = False
 
         self.get_logger().info(
-            "demo_task_node started: action=%s, services=[%s, %s, %s]",
-            self.execute_demo_action,
-            self.pause_demo_service,
-            self.resume_demo_service,
-            self.stop_demo_service,
+            "demo_task_node started: "
+            f"action={self.execute_demo_action}, "
+            f"services=[{self.pause_demo_service}, {self.resume_demo_service}, {self.stop_demo_service}]"
         )
 
     def _on_goal(self, goal_request: ExecuteDemo.Goal) -> GoalResponse:
@@ -196,7 +194,9 @@ class DemoTaskNode(Node):
             self._paused = False
             self._stop_requested = False
 
-        self.get_logger().info("execute demo: name=%s duration=%.2fs", demo_name, duration_sec)
+        self.get_logger().info(
+            f"execute demo: name={demo_name} duration={duration_sec:.2f}s"
+        )
 
         try:
             feedback = ExecuteDemo.Feedback()
