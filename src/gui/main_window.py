@@ -173,6 +173,13 @@ class MainWindow(QMainWindow):
         # ????????????mm????????????
         self.auto_grasp_max_depth_mm = 1200.0
         self.camera_device_info_text = None
+        self._ros2_vision_connected = False
+        self._ros2_vision_streaming = False
+        self._ros2_vision_simulation = False
+        self._ros2_vision_fps = 0.0
+        self._ros2_vision_resolution = "N/A"
+        self._ros2_vision_latest_frame = None
+        self._ros2_vision_device_info = "ROS2 camera stream"
         self._last_arm_state = None  # 缓存机械臂状态，便于UI刷新
         self._last_missing_log_time = 0.0  # 硬件未连接告警节流时间戳
         
@@ -408,8 +415,38 @@ class MainWindow(QMainWindow):
             camera_type = getattr(camera_config, "camera_type", None)
         return str(camera_type).lower() == "simulation"
 
+    def _is_ros2_vision_mode(self) -> bool:
+        return bool(
+            self.data_acquisition_thread is not None
+            and hasattr(self.data_acquisition_thread, "request_vision_connect")
+            and hasattr(self.data_acquisition_thread, "vision_frame")
+            and hasattr(self.data_acquisition_thread, "vision_status")
+        )
+
     def _handle_connect_camera(self):
         """处理视觉视图发起的连接请求"""
+        if self._is_ros2_vision_mode():
+            self._handle_disconnect_camera()
+            try:
+                self.data_acquisition_thread.request_vision_connect()
+                if self.vision_viewer:
+                    self.vision_viewer.update_camera_status(
+                        connected=False,
+                        streaming=False,
+                        resolution="N/A",
+                        fps=0,
+                    )
+                self.control_panel.update_device_status(
+                    vision={"connected": False, "simulation": self._ros2_vision_simulation}
+                )
+            except Exception as e:
+                if self.vision_viewer:
+                    self.vision_viewer.show_connection_error(str(e))
+                self.control_panel.update_device_status(
+                    vision={"connected": False, "simulation": False}
+                )
+            return
+
         camera_config = self._get_camera_config()
         if camera_config is None:
             self.vision_viewer.show_connection_error("相机配置无效")
@@ -450,6 +487,24 @@ class MainWindow(QMainWindow):
         """断开相机捕获"""
         self.pointcloud_auto_render = False
         self.pointcloud_fusion_force_enabled = False
+        if self._is_ros2_vision_mode():
+            try:
+                self.data_acquisition_thread.request_vision_disconnect()
+            except Exception:
+                pass
+            self._ros2_vision_connected = False
+            self._ros2_vision_streaming = False
+            self._ros2_vision_latest_frame = None
+            self._stop_camera_timer()
+            if self.vision_viewer:
+                self.vision_viewer.update_camera_status(
+                    connected=False, streaming=False, resolution="N/A", fps=0
+                )
+            self.control_panel.update_device_status(
+                vision={"connected": False, "simulation": self._ros2_vision_simulation}
+            )
+            return
+
         if self.camera_capture:
             try:
                 self.camera_capture.stop_capture()
@@ -467,6 +522,8 @@ class MainWindow(QMainWindow):
 
     def _start_camera_timer(self):
         """启动定时拉流，将最新帧推送到视觉窗口"""
+        if self._is_ros2_vision_mode():
+            return
         if self.camera_timer is None:
             self.camera_timer = QTimer()
             self.camera_timer.timeout.connect(self._update_camera_view)
@@ -481,6 +538,11 @@ class MainWindow(QMainWindow):
 
     def _get_latest_camera_frame(self, timeout: float = 1.0) -> Optional[object]:
         """获取最新相机帧，失败时抛出异常"""
+        if self._is_ros2_vision_mode():
+            frame = self._ros2_vision_latest_frame
+            if frame is None:
+                raise RuntimeError("尚未接收到 ROS2 相机数据")
+            return frame
         if not self.camera_capture:
             raise RuntimeError("请先连接相机")
         frame = self.camera_capture.get_frame_with_timeout(timeout)
@@ -518,13 +580,18 @@ class MainWindow(QMainWindow):
         # 同步状态显示
         h, w = display_image.shape[:2]
         config = self._get_camera_config()
-        fps_display = int(self.camera_capture.fps) if self.camera_capture and self.camera_capture.fps else (config.fps if config else 0)
+        if self._is_ros2_vision_mode():
+            fps_display = int(self._ros2_vision_fps) if self._ros2_vision_fps > 0 else (config.fps if config else 0)
+        else:
+            fps_display = int(self.camera_capture.fps) if self.camera_capture and self.camera_capture.fps else (config.fps if config else 0)
         self.vision_viewer.update_camera_status(
             connected=True, streaming=True, resolution=f"{w}x{h}", fps=fps_display
         )
 
     def _update_camera_view(self):
         """定时获取最新相机帧并更新UI"""
+        if self._is_ros2_vision_mode():
+            return
         if not self.camera_capture or not self.camera_capture.is_capturing:
             return
         frame = self.camera_capture.get_latest_frame()
@@ -551,6 +618,64 @@ class MainWindow(QMainWindow):
                 self._refresh_pointcloud_viewer(frame)
             except Exception as e:
                 self.logger.debug(f"点云融合失败: {e}")
+
+    @pyqtSlot(object)
+    def _handle_ros2_vision_frame(self, frame):
+        if frame is None:
+            return
+        self._ros2_vision_latest_frame = frame
+        self._ros2_vision_connected = True
+        self._ros2_vision_streaming = True
+
+        self._push_camera_frame_to_viewer(frame)
+        self._refresh_self_check_status(frame)
+
+        if self.auto_detect_enabled and not self.detect_in_progress:
+            now = time.time()
+            if now - self.last_auto_detect_time >= self.auto_detect_interval:
+                self.detect_in_progress = True
+                self.last_auto_detect_time = now
+                try:
+                    self._run_detection_on_image(frame.color_image, frame.depth_image, frame.intrinsics)
+                except Exception as e:
+                    self.logger.debug(f"ROS2实时检测失败: {e}")
+                finally:
+                    self.detect_in_progress = False
+
+        try:
+            if self._get_pointcloud_fusion_config() is not None:
+                self._update_pointcloud_fusion(frame)
+            self._refresh_pointcloud_viewer(frame)
+        except Exception as e:
+            self.logger.debug(f"ROS2点云融合失败: {e}")
+
+    @pyqtSlot(dict)
+    def _handle_ros2_vision_status(self, info: Dict[str, Any]):
+        if not isinstance(info, dict):
+            return
+        self._ros2_vision_connected = bool(info.get("connected", False))
+        self._ros2_vision_streaming = bool(info.get("streaming", self._ros2_vision_connected))
+        self._ros2_vision_simulation = bool(info.get("simulation", False))
+        self._ros2_vision_fps = float(info.get("fps", self._ros2_vision_fps or 0.0))
+        self._ros2_vision_resolution = str(info.get("resolution", self._ros2_vision_resolution))
+        device_info = str(info.get("device_info", "") or "").strip()
+        if device_info:
+            self._ros2_vision_device_info = device_info
+
+        if self.vision_viewer:
+            self.vision_viewer.update_camera_status(
+                connected=self._ros2_vision_connected,
+                streaming=self._ros2_vision_streaming,
+                resolution=self._ros2_vision_resolution,
+                fps=int(self._ros2_vision_fps),
+            )
+
+        self.control_panel.update_device_status(
+            vision={
+                "connected": self._ros2_vision_connected,
+                "simulation": self._ros2_vision_simulation,
+            }
+        )
 
     def _get_detection_config(self) -> Dict[str, Any]:
         """生成检测配置，兼容 DemoConfig 或 CameraConfig"""
@@ -1201,6 +1326,15 @@ class MainWindow(QMainWindow):
         if not self.vision_viewer:
             return
 
+        if self._is_ros2_vision_mode():
+            frame = self._ros2_vision_latest_frame
+            if frame is None:
+                self.vision_viewer.update_self_check_result("未连接", "未连接", depth_ok=False)
+                self._show_camera_error("请先连接 ROS2 相机后再执行自检")
+                return
+            self._refresh_self_check_status(frame)
+            return
+
         if not self.camera_capture or not self.camera_capture.is_capturing:
             # 未连接时给出明确提示
             self.vision_viewer.update_self_check_result("未连接", "未连接", depth_ok=False)
@@ -1214,6 +1348,8 @@ class MainWindow(QMainWindow):
 
     def _format_device_info_text(self) -> str:
         """格式化设备信息文本（型号/序列号/固件）"""
+        if self._is_ros2_vision_mode():
+            return self._ros2_vision_device_info or "ROS2 camera stream"
         if not self.camera_capture:
             return "N/A"
         device_info = self.camera_capture.get_device_info()
@@ -1232,6 +1368,17 @@ class MainWindow(QMainWindow):
 
     def _evaluate_depth_status(self, frame) -> Tuple[str, Optional[bool]]:
         """评估深度状态，返回(状态文本, 是否正常)"""
+        if self._is_ros2_vision_mode():
+            if frame is None:
+                return "未连接", False
+            depth_image = getattr(frame, "depth_image", None)
+            if depth_image is None or depth_image.size == 0:
+                return "未收到深度帧", False
+            valid_ratio = float(np.count_nonzero(depth_image)) / float(depth_image.size)
+            if valid_ratio > 0.01:
+                return f"正常（有效像素 {valid_ratio:.0%}）", True
+            return "深度无效（有效像素过少）", False
+
         if not self.camera_capture:
             return "未连接", False
         if not getattr(self.camera_capture.config, "enable_depth", False):
@@ -1986,6 +2133,10 @@ class MainWindow(QMainWindow):
         # 连接数据采集线程信号
         if self.data_acquisition_thread is not None and hasattr(self.data_acquisition_thread, "new_data"):
             self.data_acquisition_thread.new_data.connect(self.update_sensor_data)
+        if self.data_acquisition_thread is not None and hasattr(self.data_acquisition_thread, "vision_frame"):
+            self.data_acquisition_thread.vision_frame.connect(self._handle_ros2_vision_frame)
+        if self.data_acquisition_thread is not None and hasattr(self.data_acquisition_thread, "vision_status"):
+            self.data_acquisition_thread.vision_status.connect(self._handle_ros2_vision_status)
         
         # 连接控制线程信号
         if self.control_thread is not None and hasattr(self.control_thread, "status_updated"):
@@ -2301,8 +2452,12 @@ class MainWindow(QMainWindow):
             arm_connected = bool(arm_info.get("connected", False))
             arm_simulation = bool(arm_info.get("simulation", False)) or arm_info.get("connection_type") == "simulation"
 
-            vision_connected = bool(self.camera_capture and getattr(self.camera_capture, "is_capturing", False))
-            vision_simulation = self._is_camera_simulation()
+            if self._is_ros2_vision_mode():
+                vision_connected = bool(self._ros2_vision_connected)
+                vision_simulation = bool(self._ros2_vision_simulation)
+            else:
+                vision_connected = bool(self.camera_capture and getattr(self.camera_capture, "is_capturing", False))
+                vision_simulation = self._is_camera_simulation()
 
             self.control_panel.update_device_status(
                 stm32={"connected": stm32_connected, "simulation": stm32_simulation},
