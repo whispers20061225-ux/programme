@@ -16,6 +16,7 @@ setup(
                 "launch/phase1_fake_chain.launch.py",
                 "launch/phase2_hardware.launch.py",
                 "launch/phase3_control.launch.py",
+                "launch/phase5_task.launch.py",
             ],
         ),
         (
@@ -24,6 +25,7 @@ setup(
                 "config/phase1_fake_chain.yaml",
                 "config/phase2_hardware.yaml",
                 "config/phase3_control.yaml",
+                "config/phase5_task.yaml",
             ],
         ),
     ],
@@ -31,7 +33,7 @@ setup(
     zip_safe=True,
     maintainer="whisp",
     maintainer_email="whisp@users.noreply.github.com",
-    description="Bringup package for tactile ROS2 migration phases 1-3.",
+    description="Bringup package for tactile ROS2 migration phases 1-5.",
     license="MIT",
     tests_require=["pytest"],
     entry_points={

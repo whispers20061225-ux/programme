@@ -4,7 +4,7 @@ ROS2 entrypoint for phased migration.
 
 This keeps legacy `main.py` untouched and runs the existing PyQt GUI with:
 - ROS2 tactile subscription as data source
-- ROS2 control thread (phase 4) or control stub fallback
+- ROS2 control thread (phase 5) or control stub fallback
 """
 
 import argparse
@@ -177,7 +177,7 @@ class Ros2PhaseApp:
 
             self.app = QApplication(sys.argv)
             self.app.setApplicationName("Tactile Gripper Demo")
-            self.app.setApplicationVersion("2.2.0-phase4-ros2")
+            self.app.setApplicationVersion("2.3.0-phase5-ros2")
             self.app.setFont(QFont("Microsoft YaHei", 10))
 
             self.main_window = MainWindow(
@@ -186,7 +186,7 @@ class Ros2PhaseApp:
                 control_thread=self.control_thread,
                 config=self.config,
             )
-            title_suffix = "Phase4 Control" if self.control_mode != "stub" else "Monitor Stub"
+            title_suffix = "Phase5 Task" if self.control_mode != "stub" else "Monitor Stub"
             self.main_window.setWindowTitle(f"Tactile Gripper Control [ROS2 {title_suffix}]")
             self.main_window.resize(self.config.ui.window_width, self.config.ui.window_height)
             return True
@@ -228,7 +228,7 @@ class Ros2PhaseApp:
         self.demo_manager.status_changed.emit(
             "ready",
             {
-                "mode": "ros2_phase4" if self.control_mode != "stub" else "ros2_stub",
+                "mode": "ros2_phase5" if self.control_mode != "stub" else "ros2_stub",
                 "message": "ROS2 GUI mode started",
                 "tactile_topic": self.tactile_topic,
                 "health_topic": self.health_topic,

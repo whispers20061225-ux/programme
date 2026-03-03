@@ -10,16 +10,19 @@ from PyQt5.QtCore import QObject, QThread, pyqtSignal
 
 try:
     import rclpy
+    from rclpy.action import ActionClient
     from rclpy.executors import ExternalShutdownException, SingleThreadedExecutor
     from rclpy.node import Node
     from rclpy.qos import HistoryPolicy, QoSProfile, ReliabilityPolicy
     from std_srvs.srv import SetBool, Trigger
+    from tactile_interfaces.action import ExecuteDemo
     from tactile_interfaces.msg import ArmState, SystemHealth
     from tactile_interfaces.srv import MoveArmJoint, MoveArmJoints
 
     ROS2_IMPORT_ERROR = None
 except Exception as exc:  # pragma: no cover - optional at runtime
     rclpy = None
+    ActionClient = None
     ExternalShutdownException = Exception
     SingleThreadedExecutor = None
     Node = object
@@ -28,6 +31,7 @@ except Exception as exc:  # pragma: no cover - optional at runtime
     ReliabilityPolicy = None
     SetBool = None
     Trigger = None
+    ExecuteDemo = None
     ArmState = None
     SystemHealth = None
     MoveArmJoint = None
@@ -86,6 +90,10 @@ class _Ros2ControlNode(Node):
         control_move_joint_service: str,
         control_move_joints_service: str,
         control_reset_emergency_service: str,
+        execute_demo_action: str,
+        pause_demo_service: str,
+        resume_demo_service: str,
+        stop_demo_service: str,
     ) -> None:
         super().__init__("ros2_control_bridge")
         self._owner = owner
@@ -109,6 +117,10 @@ class _Ros2ControlNode(Node):
         self.move_joint_client = self.create_client(MoveArmJoint, control_move_joint_service)
         self.move_joints_client = self.create_client(MoveArmJoints, control_move_joints_service)
         self.reset_emergency_client = self.create_client(Trigger, control_reset_emergency_service)
+        self.pause_demo_client = self.create_client(Trigger, pause_demo_service)
+        self.resume_demo_client = self.create_client(Trigger, resume_demo_service)
+        self.stop_demo_client = self.create_client(Trigger, stop_demo_service)
+        self.execute_demo_client = ActionClient(self, ExecuteDemo, execute_demo_action)
 
     def _on_arm_state(self, msg: ArmState) -> None:
         self._owner.on_arm_state(msg)
@@ -118,7 +130,7 @@ class _Ros2ControlNode(Node):
 
 
 class Ros2ControlThread(QThread):
-    """Phase 4 ROS2 control thread.
+    """Phase 5 ROS2 control thread.
 
     It keeps Qt/UI wiring compatible while forwarding arm commands to
     /control/arm/* services.
@@ -136,6 +148,10 @@ class Ros2ControlThread(QThread):
         control_move_joint_service: str = "/control/arm/move_joint",
         control_move_joints_service: str = "/control/arm/move_joints",
         control_reset_emergency_service: str = "/system/reset_emergency",
+        execute_demo_action: str = "/task/execute_demo",
+        pause_demo_service: str = "/task/pause_demo",
+        resume_demo_service: str = "/task/resume_demo",
+        stop_demo_service: str = "/task/stop_demo",
         command_timeout_sec: float = 5.0,
         gripper_joint_id: int = 6,
         gripper_position_min: float = 0.0,
@@ -156,6 +172,10 @@ class Ros2ControlThread(QThread):
         self.control_move_joint_service = control_move_joint_service
         self.control_move_joints_service = control_move_joints_service
         self.control_reset_emergency_service = control_reset_emergency_service
+        self.execute_demo_action = execute_demo_action
+        self.pause_demo_service = pause_demo_service
+        self.resume_demo_service = resume_demo_service
+        self.stop_demo_service = stop_demo_service
         self.command_timeout_sec = max(0.2, float(command_timeout_sec))
         self.gripper_joint_id = max(1, int(gripper_joint_id))
         self.gripper_position_min = float(gripper_position_min)
@@ -195,6 +215,9 @@ class Ros2ControlThread(QThread):
         self._ros_owned_context = False
         self._node: Optional[_Ros2ControlNode] = None
         self._executor: Optional[SingleThreadedExecutor] = None
+        self._demo_goal_handle = None
+        self._demo_result_future = None
+        self._demo_name = ""
 
     def run(self) -> None:
         if ROS2_IMPORT_ERROR is not None:
@@ -221,6 +244,10 @@ class Ros2ControlThread(QThread):
                 control_move_joint_service=self.control_move_joint_service,
                 control_move_joints_service=self.control_move_joints_service,
                 control_reset_emergency_service=self.control_reset_emergency_service,
+                execute_demo_action=self.execute_demo_action,
+                pause_demo_service=self.pause_demo_service,
+                resume_demo_service=self.resume_demo_service,
+                stop_demo_service=self.stop_demo_service,
             )
             self._executor = SingleThreadedExecutor()
             self._executor.add_node(self._node)
@@ -228,15 +255,17 @@ class Ros2ControlThread(QThread):
             self.status_updated.emit(
                 "ros2_mode_ready",
                 {
-                    "message": "ROS2 phase4 control mode is active.",
+                    "message": "ROS2 phase5 control mode is active.",
                     "arm_state_topic": self.arm_state_topic,
                     "health_topic": self.health_topic,
                     "control_enable_service": self.control_enable_service,
+                    "execute_demo_action": self.execute_demo_action,
                 },
             )
 
             while self._running:
                 self._executor.spin_once(timeout_sec=0.05)
+                self._poll_demo_result()
                 self._drain_command_queue(max_items=4)
         except ExternalShutdownException:
             # Expected during Ctrl-C / external ROS shutdown.
@@ -263,6 +292,9 @@ class Ros2ControlThread(QThread):
             pass
         self._executor = None
         self._node = None
+        self._demo_goal_handle = None
+        self._demo_result_future = None
+        self._demo_name = ""
         if self._ros_owned_context and rclpy is not None and rclpy.ok():
             try:
                 rclpy.shutdown()
@@ -294,6 +326,10 @@ class Ros2ControlThread(QThread):
                 "sensor": {
                     "connected": bool(self._tactile_connected),
                     "simulation": True,
+                },
+                "demo": {
+                    "running": bool(self._demo_goal_handle is not None),
+                    "name": str(self._demo_name),
                 },
             }
 
@@ -583,6 +619,34 @@ class Ros2ControlThread(QThread):
             self._execute_auto_grasp_compat(params)
             return
 
+        if command == "start_demo":
+            self._execute_start_demo(params)
+            return
+
+        if command == "pause_demo":
+            self._execute_demo_trigger(
+                self._node.pause_demo_client,
+                status="demo_running",
+                fallback_message="demo paused",
+            )
+            return
+
+        if command == "resume_demo":
+            self._execute_demo_trigger(
+                self._node.resume_demo_client,
+                status="demo_running",
+                fallback_message="demo resumed",
+            )
+            return
+
+        if command == "stop_demo":
+            self._execute_demo_trigger(
+                self._node.stop_demo_client,
+                status="demo_running",
+                fallback_message="demo stop requested",
+            )
+            return
+
         if command == "emergency_stop":
             success, message = self._set_arm_enabled(False)
             self.status_updated.emit(
@@ -602,15 +666,192 @@ class Ros2ControlThread(QThread):
             )
             return
 
-        # Not migrated in phase 4 control bridge.
+        # Not migrated in phase 5 control bridge.
         self.status_updated.emit(
             "command_ignored",
             {
                 "command": command,
                 "params": params,
-                "message": "Command is not migrated to ROS2 phase4 control path.",
+                "message": "Command is not migrated to ROS2 phase5 control path.",
             },
         )
+
+    def _execute_start_demo(self, params: Dict[str, Any]) -> None:
+        if self._node is None:
+            self.status_updated.emit("demo_failed", {"error": "ROS2 control node not ready"})
+            return
+
+        demo_name = str(params.get("demo_name", "ros2_demo")).strip() or "ros2_demo"
+        if self._demo_goal_handle is not None:
+            self.status_updated.emit(
+                "demo_failed",
+                {"demo_name": demo_name, "error": "another demo is already running"},
+            )
+            return
+
+        payload = {}
+        nested = params.get("params")
+        if isinstance(nested, dict):
+            payload.update(nested)
+        for key, value in params.items():
+            if key in ("demo_name", "params", "duration_sec"):
+                continue
+            payload[key] = value
+        if "duration_sec" in params and "duration" not in payload:
+            payload["duration"] = params.get("duration_sec")
+
+        goal = ExecuteDemo.Goal()
+        goal.demo_name = demo_name
+        goal.duration_sec = float(payload.get("duration", params.get("duration_sec", 0.0)) or 0.0)
+        try:
+            goal.params_json = json.dumps(payload, ensure_ascii=False)
+        except Exception:
+            goal.params_json = "{}"
+
+        if not self._node.execute_demo_client.wait_for_server(timeout_sec=self.command_timeout_sec):
+            self.status_updated.emit(
+                "demo_failed",
+                {"demo_name": demo_name, "error": "task action server unavailable"},
+            )
+            return
+
+        self.status_updated.emit(
+            "demo_starting",
+            {"demo_name": demo_name, "message": "submitting action goal"},
+        )
+
+        future = self._node.execute_demo_client.send_goal_async(
+            goal, feedback_callback=self._on_demo_feedback
+        )
+        goal_handle, error = self._wait_future(future, timeout_sec=self.command_timeout_sec)
+        if goal_handle is None:
+            self.status_updated.emit(
+                "demo_failed",
+                {"demo_name": demo_name, "error": f"send_goal failed: {error}"},
+            )
+            return
+
+        if not bool(getattr(goal_handle, "accepted", False)):
+            self.status_updated.emit(
+                "demo_failed",
+                {"demo_name": demo_name, "error": "goal rejected by task node"},
+            )
+            return
+
+        self._demo_goal_handle = goal_handle
+        self._demo_result_future = goal_handle.get_result_async()
+        self._demo_name = demo_name
+        self.status_updated.emit(
+            "demo_started",
+            {"demo_name": demo_name, "message": "task action started"},
+        )
+
+    def _execute_demo_trigger(self, client, status: str, fallback_message: str) -> None:
+        if self._node is None:
+            self.status_updated.emit("demo_failed", {"error": "ROS2 control node not ready"})
+            return
+
+        result, error = self._call_service(client, Trigger.Request())
+        if result is None:
+            self.status_updated.emit(
+                "demo_failed",
+                {"demo_name": self._demo_name, "error": f"{fallback_message} failed: {error}"},
+            )
+            return
+
+        if not bool(result.success):
+            self.status_updated.emit(
+                "demo_failed",
+                {"demo_name": self._demo_name, "error": str(result.message)},
+            )
+            return
+
+        self.status_updated.emit(
+            status,
+            {
+                "demo_name": self._demo_name,
+                "message": str(result.message) if str(result.message) else fallback_message,
+            },
+        )
+
+    def _on_demo_feedback(self, feedback_msg) -> None:
+        feedback = feedback_msg.feedback
+        info = {
+            "demo_name": self._demo_name,
+            "progress": float(feedback.progress),
+            "state": str(feedback.current_state),
+            "message": str(feedback.message),
+        }
+        self.status_updated.emit("demo_progress", info)
+        if info["state"] in ("starting", "running", "paused"):
+            self.status_updated.emit("demo_running", info)
+
+    def _poll_demo_result(self) -> None:
+        if self._demo_result_future is None:
+            return
+        if not self._demo_result_future.done():
+            return
+
+        future = self._demo_result_future
+        demo_name = self._demo_name
+        self._demo_result_future = None
+        self._demo_goal_handle = None
+        self._demo_name = ""
+
+        try:
+            wrapped = future.result()
+            result = wrapped.result
+            success = bool(result.success)
+            message = str(result.message)
+            final_state = str(result.final_state or "")
+        except Exception as exc:  # noqa: BLE001
+            self.status_updated.emit(
+                "demo_failed",
+                {"demo_name": demo_name, "error": f"result retrieval failed: {exc}"},
+            )
+            return
+
+        info = {
+            "demo_name": demo_name,
+            "success": success,
+            "message": message,
+            "final_state": final_state,
+        }
+        if success and final_state == "completed":
+            self.status_updated.emit("demo_completed", info)
+            return
+        if final_state in ("stopped", "canceled"):
+            self.status_updated.emit("demo_stopped", info)
+            return
+
+        self.status_updated.emit(
+            "demo_failed",
+            {
+                "demo_name": demo_name,
+                "error": message if message else "demo failed",
+                "final_state": final_state,
+            },
+        )
+
+    def _wait_future(self, future, timeout_sec: float):
+        if self._executor is None:
+            return None, "executor not initialized"
+
+        deadline = time.time() + max(0.1, float(timeout_sec))
+        while self._running and time.time() < deadline:
+            try:
+                self._executor.spin_once(timeout_sec=0.05)
+            except ExternalShutdownException:
+                return None, "ros context shutdown"
+            if future.done():
+                break
+
+        if not future.done():
+            return None, "future timeout"
+        try:
+            return future.result(), ""
+        except Exception as exc:  # noqa: BLE001
+            return None, str(exc)
 
     def _execute_gripper_move(self, params: Dict[str, Any]) -> bool:
         if self._node is None:
@@ -719,7 +960,7 @@ class Ros2ControlThread(QThread):
             {
                 "success": success,
                 "mode": "gripper_only",
-                "message": "auto_grasp executed in phase4 compatibility mode (gripper sequence only)"
+                "message": "auto_grasp executed in phase5 compatibility mode (gripper sequence only)"
                 if success
                 else "auto_grasp compatibility sequence failed",
                 "object_cam_mm": params.get("object_cam_mm"),
@@ -884,6 +1125,10 @@ class Ros2DemoManagerStub(QObject):
         "move_arm_joint",
         "move_arm_joints",
         "auto_grasp",
+        "start_demo",
+        "stop_demo",
+        "pause_demo",
+        "resume_demo",
     }
 
     def __init__(self, config: Any, data_acquisition: Any, control_thread: Any):
@@ -893,9 +1138,21 @@ class Ros2DemoManagerStub(QObject):
         self.control_thread = control_thread
         self.hardware_interface = None
         self.logger = logging.getLogger(__name__)
+        if self.control_thread is not None and hasattr(self.control_thread, "status_updated"):
+            self.control_thread.status_updated.connect(self._on_control_status)
 
     def handle_control_command(self, command: str, params: Optional[Dict[str, Any]] = None) -> None:
         params = params or {}
+        if self.control_thread is None or not hasattr(self.control_thread, "send_command"):
+            self.status_changed.emit(
+                "error",
+                {
+                    "mode": "ros2_phase5",
+                    "command": command,
+                    "message": "ROS2 control thread is unavailable",
+                },
+            )
+            return
 
         if command in self._FORWARDED_CONTROL_COMMANDS:
             ok = bool(self.control_thread.send_command(command, params))
@@ -903,42 +1160,46 @@ class Ros2DemoManagerStub(QObject):
                 self.status_changed.emit(
                     "error",
                     {
-                        "mode": "ros2_phase4",
+                        "mode": "ros2_phase5",
                         "command": command,
                         "message": "Failed to queue ROS2 control command",
                     },
                 )
             return
 
-        if command == "start_demo":
-            demo_name = str(params.get("demo_name", "ros2_phase4"))
-            self.demo_started.emit(demo_name, {"mode": "ros2_phase4", "params": params})
-            self.status_changed.emit(
-                "demo_started",
-                {
-                    "mode": "ros2_phase4",
-                    "message": "Demo orchestration is not migrated in phase 4.",
-                    "demo_name": demo_name,
-                },
-            )
-            return
-
-        if command == "stop_demo":
-            self.demo_stopped.emit("ros2_phase4", {"mode": "ros2_phase4"})
-            self.status_changed.emit(
-                "demo_stopped",
-                {"mode": "ros2_phase4", "message": "Demo stopped."},
-            )
-            return
-
         self.status_changed.emit(
             "command_ignored",
             {
-                "mode": "ros2_phase4",
+                "mode": "ros2_phase5",
                 "command": command,
                 "message": "Command is not supported in current ROS2 stage.",
             },
         )
+
+    def _on_control_status(self, status: str, info: Dict[str, Any]) -> None:
+        info = dict(info or {})
+        demo_statuses = {
+            "demo_starting",
+            "demo_started",
+            "demo_running",
+            "demo_progress",
+            "demo_stopped",
+            "demo_completed",
+            "demo_failed",
+        }
+        if status not in demo_statuses:
+            return
+
+        self.status_changed.emit(status, info)
+        demo_name = str(info.get("demo_name", "ros2_demo"))
+
+        if status == "demo_started":
+            self.demo_started.emit(demo_name, info)
+        elif status in ("demo_stopped", "demo_completed", "demo_failed"):
+            self.demo_stopped.emit(demo_name, info)
+        elif status == "demo_progress":
+            progress = float(info.get("progress", 0.0))
+            self.demo_progress.emit(progress, info)
 
     def start_demo(self, demo_name: str, params: Optional[Dict[str, Any]] = None) -> bool:
         self.handle_control_command("start_demo", {"demo_name": demo_name, **(params or {})})
@@ -956,17 +1217,19 @@ class Ros2DemoManagerStub(QObject):
         arm_status: Dict[str, Any] = {"connected": False, "enabled": False, "homed": False}
         servo_status: Dict[str, Any] = {"connected": False, "simulation": True}
         sensor_status: Dict[str, Any] = {"connected": False, "simulation": True}
+        demo_status: Dict[str, Any] = {"running": False, "name": ""}
         if self.control_thread is not None and hasattr(self.control_thread, "get_status"):
             maybe = self.control_thread.get_status()
             if isinstance(maybe, dict):
                 arm_status = maybe.get("arm", arm_status) or arm_status
                 servo_status = maybe.get("servo", servo_status) or servo_status
                 sensor_status = maybe.get("sensor", sensor_status) or sensor_status
+                demo_status = maybe.get("demo", demo_status) or demo_status
 
         tactile_connected = bool(latest is not None) or bool(sensor_status.get("connected", False))
 
         return {
-            "mode": "ros2_phase4",
+            "mode": "ros2_phase5",
             "servo": {
                 "connected": bool(servo_status.get("connected", False)),
                 "simulation": bool(servo_status.get("simulation", True)),
@@ -977,6 +1240,7 @@ class Ros2DemoManagerStub(QObject):
                 "latest_timestamp": getattr(latest, "timestamp", None),
             },
             "arm": arm_status,
+            "demo": demo_status,
         }
 
     def export_data(self, file_path: str) -> bool:
@@ -985,7 +1249,7 @@ class Ros2DemoManagerStub(QObject):
             if self.data_acquisition is not None and hasattr(self.data_acquisition, "get_latest_data"):
                 latest = self.data_acquisition.get_latest_data()
             payload = {
-                "mode": "ros2_phase4",
+                "mode": "ros2_phase5",
                 "export_time": time.time(),
                 "latest_data": latest.to_dict() if latest is not None and hasattr(latest, "to_dict") else None,
             }

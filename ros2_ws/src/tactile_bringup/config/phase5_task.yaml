@@ -1,0 +1,79 @@
+tactile_sensor_node:
+  ros__parameters:
+    publish_rate_hz: 30.0
+    rows: 3
+    cols: 3
+    use_simulation: true
+    sensor_port: "SIM_SENSOR"
+    sensor_baudrate: 115200
+    sensor_timeout: 0.1
+    tactile_topic: "/tactile/raw"
+    health_topic: "/system/health"
+    reconnect_interval_sec: 2.0
+
+arm_driver_node:
+  ros__parameters:
+    state_rate_hz: 20.0
+    auto_enable: false
+    arm_num_joints: 6
+    arm_serial_port: "COM5"
+    arm_baudrate: 115200
+    arm_timeout: 1.0
+    arm_startup_delay: 1.0
+    home_duration_ms: 1500
+    home_joint_angles: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    command_default_duration_ms: 1000
+    enforce_angle_limits: true
+    min_angle_deg: -180.0
+    max_angle_deg: 270.0
+    state_topic: "/arm/state"
+    health_topic: "/system/health"
+
+arm_control_node:
+  ros__parameters:
+    arm_state_topic: "/arm/state"
+    health_topic: "/system/health"
+    hardware_enable_service: "/arm/enable"
+    hardware_home_service: "/arm/home"
+    hardware_move_joint_service: "/arm/move_joint"
+    hardware_move_joints_service: "/arm/move_joints"
+    control_enable_service: "/control/arm/enable"
+    control_home_service: "/control/arm/home"
+    control_move_joint_service: "/control/arm/move_joint"
+    control_move_joints_service: "/control/arm/move_joints"
+    control_move_joints_action: "/control/arm/move_joints_action"
+    control_reset_emergency_service: "/system/reset_emergency"
+    arm_num_joints: 6
+    arm_state_timeout_sec: 2.0
+    command_timeout_sec: 5.0
+    client_retry_count: 1
+    emergency_latch_level: 2
+    reject_on_arm_error: true
+    enforce_angle_limits: true
+    min_angle_deg: -180.0
+    max_angle_deg: 270.0
+
+demo_task_node:
+  ros__parameters:
+    execute_demo_action: "/task/execute_demo"
+    pause_demo_service: "/task/pause_demo"
+    resume_demo_service: "/task/resume_demo"
+    stop_demo_service: "/task/stop_demo"
+    control_enable_service: "/control/arm/enable"
+    control_home_service: "/control/arm/home"
+    control_move_joints_service: "/control/arm/move_joints"
+    default_duration_sec: 15.0
+    max_duration_sec: 120.0
+    feedback_rate_hz: 10.0
+    command_timeout_sec: 5.0
+    auto_prepare_arm: true
+    default_gripper_joint_id: 6
+    default_open_angle_deg: 85.0
+    default_close_angle_deg: 35.0
+    default_motion_duration_ms: 800
+
+tactile_ui_subscriber:
+  ros__parameters:
+    tactile_topic: "/tactile/raw"
+    health_topic: "/system/health"
+    report_interval_sec: 2.0

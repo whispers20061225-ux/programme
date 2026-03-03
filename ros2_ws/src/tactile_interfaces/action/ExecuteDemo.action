@@ -1,0 +1,11 @@
+string demo_name
+string params_json
+float32 duration_sec
+---
+bool success
+string message
+string final_state
+---
+float32 progress
+string current_state
+string message

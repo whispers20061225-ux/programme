@@ -17,6 +17,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/ArmState.msg"
   "msg/GripperState.msg"
   "action/MoveArmJoints.action"
+  "action/ExecuteDemo.action"
   "srv/SetGripperForce.srv"
   "srv/MoveArmJoint.srv"
   "srv/MoveArmJoints.srv"

@@ -35,9 +35,12 @@ This file tracks the first implementation batch of UI-to-ROS2 control migration.
   - GUI arm command path -> `/control/arm/*`
   - GUI arm state display <- `/arm/state`
   - health warnings <- `/system/health`
-- Not migrated yet:
-  - full demo/task orchestration to ROS2 action graph (phase5 scope)
-  - legacy non-arm command set (kept as compatibility/no-op where applicable)
+- Single-arm architecture:
+  - No dedicated gripper node is required in current hardware model.
+  - Gripper-related UI commands are mapped to an arm joint service call in ROS2 bridge layer.
+- Task orchestration:
+  - This document reflects phase-4 completion baseline.
+  - Full ROS2 Action task orchestration is tracked in `docs/phase5_task_kickoff.md`.
 
 ## Runtime commands
 
@@ -70,3 +73,8 @@ python main_ros2.py --control-mode stub
 - `main.py` legacy workflow remains unchanged.
 - `main_ros2.py --control-mode stub` keeps previous monitor semantics.
 - Rollback target: previous phase3 commit on `develop`.
+
+## Handoff to phase 5
+
+- Phase 5 migrates `start_demo/pause_demo/resume_demo/stop_demo` to task Action/Services.
+- Use `phase5_task.launch.py` for the task-orchestration acceptance route.
