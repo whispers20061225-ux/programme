@@ -3,8 +3,8 @@ tactile_sensor_node:
     publish_rate_hz: 30.0
     rows: 3
     cols: 3
-    use_simulation: false
-    sensor_port: "/dev/ttyUSB0"
+    use_simulation: true
+    sensor_port: "SIM_SENSOR"
     sensor_baudrate: 115200
     sensor_timeout: 0.1
     tactile_topic: "/tactile/raw"
@@ -16,7 +16,7 @@ arm_driver_node:
     state_rate_hz: 20.0
     auto_enable: false
     arm_num_joints: 6
-    arm_serial_port: "/dev/ttyUSB1"
+    arm_serial_port: "/dev/ttyACM0"
     arm_baudrate: 115200
     arm_timeout: 1.0
     arm_startup_delay: 1.0
