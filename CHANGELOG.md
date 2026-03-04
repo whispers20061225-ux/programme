@@ -33,6 +33,12 @@ All notable project updates are recorded in this file.
     - `deploy/vm/start_split_vm_app.sh`
   - Updated Windows hardware start helper:
     - `deploy/windows/start_hw_nodes.ps1` now defaults to `split_windows_hardware.yaml`
+    - fallback RealSense publish path:
+      - uses `tactile_vision/realsense_camera_node` when `realsense2_camera` package is not available on Windows
+    - added RealSense-only helper:
+      - `deploy/windows/start_realsense_only.ps1`
+  - Added RealSense publisher node in `tactile_vision`:
+    - `realsense_camera_node.py` (pyrealsense2 based)
   - Added runbook:
     - `docs/windows_vm_split_phaseB.md`
 - Phase 6.1 kickoff:

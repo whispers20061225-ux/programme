@@ -21,6 +21,7 @@ setup(
     entry_points={
         "console_scripts": [
             "realsense_monitor_node = tactile_vision.realsense_monitor_node:main",
+            "realsense_camera_node = tactile_vision.realsense_camera_node:main",
         ],
     },
 )

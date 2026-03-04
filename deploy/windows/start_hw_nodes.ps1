@@ -36,15 +36,8 @@ function Test-RosPackage {
     return ($LASTEXITCODE -eq 0)
 }
 
-$realsenseCmd = @(
-    "ros2 run realsense2_camera realsense2_camera_node --ros-args",
-    "-p serial_no:=$RealsenseSerial",
-    "-p enable_color:=true",
-    "-p enable_depth:=true",
-    "-p align_depth.enable:=true",
-    "-p rgb_camera.profile:=640x480x15",
-    "-p depth_module.profile:=640x480x15"
-) -join " "
+$realsenseCmd = ""
+$realsenseMode = ""
 
 $armCmd = ""
 if ($ArmParamFile) {
@@ -54,11 +47,42 @@ if ($ArmParamFile) {
 }
 
 $hasRealsensePkg = Test-RosPackage -PackageName "realsense2_camera"
+$hasRealsenseFallbackPkg = Test-RosPackage -PackageName "tactile_vision"
 $hasArmPkg = Test-RosPackage -PackageName "tactile_hardware"
 
-if ($StartRealsense -and -not $hasRealsensePkg) {
-    Write-Warning "Package 'realsense2_camera' not found. Skipping RealSense node. Install package or launch camera on VM side."
-    $StartRealsense = $false
+if ($StartRealsense) {
+    if ($hasRealsensePkg) {
+        $realsenseMode = "realsense2_camera"
+        $realsenseCmd = @(
+            "ros2 run realsense2_camera realsense2_camera_node --ros-args",
+            "-p serial_no:=$RealsenseSerial",
+            "-p enable_color:=true",
+            "-p enable_depth:=true",
+            "-p align_depth.enable:=true",
+            "-p rgb_camera.profile:=640x480x15",
+            "-p depth_module.profile:=640x480x15"
+        ) -join " "
+    } elseif ($hasRealsenseFallbackPkg) {
+        $realsenseMode = "tactile_vision.realsense_camera_node"
+        $realsenseCmd = @(
+            "ros2 run tactile_vision realsense_camera_node --ros-args",
+            "-p serial_no:=$RealsenseSerial",
+            "-p enable_color:=true",
+            "-p enable_depth:=true",
+            "-p align_depth.enable:=true",
+            "-p color_width:=640",
+            "-p color_height:=480",
+            "-p color_fps:=15",
+            "-p depth_width:=640",
+            "-p depth_height:=480",
+            "-p depth_fps:=15"
+        ) -join " "
+        Write-Warning "Package 'realsense2_camera' not found. Falling back to tactile_vision/realsense_camera_node."
+    } else {
+        Write-Warning "No RealSense publisher package found. Build ros2_ws (including tactile_vision) on Windows first."
+        Write-Warning "Hint: cd ros2_ws; colcon build --merge-install --symlink-install --packages-select tactile_interfaces tactile_vision tactile_bringup"
+        $StartRealsense = $false
+    }
 }
 
 if ($StartArm -and -not $hasArmPkg) {
@@ -72,7 +96,7 @@ if ($StartArm -and -not $hasArmPkg) {
 Write-Host ""
 Write-Host "Windows hardware node commands:"
 if ($StartRealsense) {
-    Write-Host "  [RealSense] $realsenseCmd"
+    Write-Host "  [RealSense][$realsenseMode] $realsenseCmd"
 }
 if ($StartArm) {
     Write-Host "  [Arm]       $armCmd"

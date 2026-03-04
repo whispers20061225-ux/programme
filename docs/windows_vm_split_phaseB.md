@@ -65,6 +65,18 @@ cd C:\Users\whisp\Desktop\大一年度项目\programme
 . .\deploy\windows\start_hw_nodes.ps1 -DomainId 0 -RosSetup C:\pixi_ws\ros2-windows\ros2-windows\local_setup.bat -Execute
 ```
 
+RealSense-only mode (recommended when your current focus is camera stream only):
+
+```powershell
+cd C:\Users\whisp\Desktop\大一年度项目\programme
+. .\deploy\windows\start_realsense_only.ps1 -DomainId 0 -RosSetup C:\pixi_ws\ros2-windows\ros2-windows\local_setup.bat -Execute
+```
+
+`start_hw_nodes.ps1` will automatically use:
+
+- `realsense2_camera` package if available
+- otherwise fallback to `tactile_vision/realsense_camera_node` (pyrealsense2-based)
+
 Fallback options:
 
 - If `realsense2_camera` package is missing on Windows, run without camera:
