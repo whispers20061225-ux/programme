@@ -1,0 +1,29 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>tactile_sim</name>
+  <version>0.1.0</version>
+  <description>Simulation baseline and Gazebo bridge nodes for phase 6.2 ROS2 migration.</description>
+  <maintainer email="whisp@users.noreply.github.com">whisp</maintainer>
+  <license>MIT</license>
+
+  <buildtool_depend>ament_python</buildtool_depend>
+
+  <depend>launch</depend>
+  <depend>launch_ros</depend>
+  <depend>sensor_msgs</depend>
+  <depend>trajectory_msgs</depend>
+  <depend>control_msgs</depend>
+  <depend>rclpy</depend>
+  <depend>std_srvs</depend>
+  <depend>tactile_interfaces</depend>
+  <exec_depend>gazebo_ros</exec_depend>
+  <exec_depend>controller_manager</exec_depend>
+  <exec_depend>joint_state_broadcaster</exec_depend>
+  <exec_depend>joint_trajectory_controller</exec_depend>
+  <exec_depend>robot_state_publisher</exec_depend>
+  <exec_depend>xacro</exec_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>

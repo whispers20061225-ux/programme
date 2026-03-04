@@ -1,4 +1,4 @@
-# ROS2 Workspace (Phase 1 + Phase 2 + Phase 3 + Phase 4 + Phase 5 + Phase 6.1)
+# ROS2 Workspace (Phase 1 + Phase 2 + Phase 3 + Phase 4 + Phase 5 + Phase 6.1 + Phase 6.2 base)
 
 This workspace now includes:
 
@@ -8,6 +8,7 @@ This workspace now includes:
 - phase 4: GUI command bridge to ROS2 control-layer services
 - phase 5: task orchestration (`/task/execute_demo` Action + pause/resume/stop services)
 - phase 6.1: vision ROS2 kickoff (`realsense_monitor_node` + `phase6_vision.launch.py`)
+- phase 6.2(base): simulation baseline chain (`tactile_sim` + `phase6_sim_base.launch.py`)
 
 ## Workspace layout
 
@@ -21,6 +22,7 @@ ros2_ws/
     tactile_bringup/
     tactile_ui_bridge/
     tactile_vision/
+    tactile_sim/
 ```
 
 ## Build (Ubuntu + ROS2 Jazzy)
@@ -172,4 +174,50 @@ Terminal B:
 ros2 node list | grep -E "realsense2_camera|realsense_monitor_node"
 ros2 topic hz /camera/camera/color/image_raw
 ros2 topic echo /system/health --once
+```
+
+## Run phase 6.2 (simulation baseline kickoff)
+
+Terminal A:
+
+```bash
+ros2 launch tactile_bringup phase6_sim_base.launch.py
+```
+
+Terminal B:
+
+```bash
+python main_ros2.py --control-mode ros2 --log-level INFO
+```
+
+Quick checks:
+
+```bash
+ros2 topic list | grep -E "/tactile/raw|/arm/state|/system/health"
+ros2 service list | grep -E "/arm/|/control/arm/"
+ros2 service call /control/arm/enable std_srvs/srv/SetBool "{data: true}"
+ros2 service call /control/arm/move_joint tactile_interfaces/srv/MoveArmJoint "{joint_id: 1, angle_deg: 25.0, duration_ms: 800, wait: true}"
+```
+
+## Run phase 6.2 (Gazebo + ros2_control kickoff)
+
+Terminal A:
+
+```bash
+ros2 launch tactile_bringup phase6_sim_gazebo.launch.py
+```
+
+Terminal B:
+
+```bash
+python main_ros2.py --control-mode ros2 --log-level INFO
+```
+
+Quick checks:
+
+```bash
+ros2 topic list | grep -E "/joint_states|/arm/state|/tactile/raw|/system/health"
+ros2 action list | grep /joint_trajectory_controller/follow_joint_trajectory
+ros2 service call /control/arm/enable std_srvs/srv/SetBool "{data: true}"
+ros2 service call /control/arm/move_joints tactile_interfaces/srv/MoveArmJoints "{joint_ids: [1,2,3], angles_deg: [10.0, 20.0, 15.0], duration_ms: 1200, wait: true}"
 ```

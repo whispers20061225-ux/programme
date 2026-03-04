@@ -18,6 +18,8 @@ setup(
                 "launch/phase3_control.launch.py",
                 "launch/phase5_task.launch.py",
                 "launch/phase6_vision.launch.py",
+                "launch/phase6_sim_base.launch.py",
+                "launch/phase6_sim_gazebo.launch.py",
             ],
         ),
         (
@@ -29,6 +31,8 @@ setup(
                 "config/phase5_task.yaml",
                 "config/phase5_task_hardware.yaml",
                 "config/phase6_vision.yaml",
+                "config/phase6_sim_base.yaml",
+                "config/phase6_sim_gazebo.yaml",
             ],
         ),
     ],
@@ -36,7 +40,7 @@ setup(
     zip_safe=True,
     maintainer="whisp",
     maintainer_email="whisp@users.noreply.github.com",
-    description="Bringup package for tactile ROS2 migration phases 1-6.",
+    description="Bringup package for tactile ROS2 migration phases 1-6.2.",
     license="MIT",
     tests_require=["pytest"],
     entry_points={

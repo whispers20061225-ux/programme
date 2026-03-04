@@ -165,9 +165,20 @@ python main.py --demo tactile_mapping --params "{\"duration\": 10}"
 ## 9. ROS2 重构进展
 
 - 重构开发主线位于 `develop` 分支。
-- 第 1 阶段骨架已创建在 `ros2_ws/`，包括：
+- `ros2_ws/` 已包含 phase1~phase6.2(base) 主线包：
 - `tactile_interfaces`
 - `tactile_bringup`
+- `tactile_hardware`
+- `tactile_control`
+- `tactile_task`
 - `tactile_ui_bridge`
-- 新增 `main_ros2.py` 作为第 1 阶段 ROS2 监控入口（只读数据链路）。
-- 详细说明见 `docs/phase1_kickoff.md` 与 `docs/ros2_refactor_plan.md`。
+- `tactile_vision`
+- `tactile_sim`
+- `main_ros2.py` 为 ROS2 入口，`main.py` 继续保留 legacy 路径。
+- 详细说明见：
+- `docs/phase1_kickoff.md`
+- `docs/phase5_task_kickoff.md`
+- `docs/phase6_vision_kickoff.md`
+- `docs/phase6_sim_base_kickoff.md`
+- `docs/phase6_sim_gazebo_kickoff.md`
+- `docs/ros2_refactor_plan.md`

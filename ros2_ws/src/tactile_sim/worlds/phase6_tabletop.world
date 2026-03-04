@@ -1,0 +1,77 @@
+<?xml version="1.0" ?>
+<sdf version="1.6">
+  <world name="phase6_tabletop_world">
+    <gravity>0 0 -9.81</gravity>
+
+    <include>
+      <uri>model://ground_plane</uri>
+    </include>
+
+    <include>
+      <uri>model://sun</uri>
+    </include>
+
+    <model name="table">
+      <static>true</static>
+      <pose>0.5 0.0 0.38 0 0 0</pose>
+      <link name="table_link">
+        <collision name="table_collision">
+          <geometry>
+            <box>
+              <size>1.0 0.8 0.04</size>
+            </box>
+          </geometry>
+        </collision>
+        <visual name="table_visual">
+          <geometry>
+            <box>
+              <size>1.0 0.8 0.04</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.55 0.45 0.35 1.0</ambient>
+            <diffuse>0.65 0.55 0.45 1.0</diffuse>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <model name="target_cylinder">
+      <static>false</static>
+      <pose>0.58 0.08 0.44 0 0 0</pose>
+      <link name="target_link">
+        <inertial>
+          <mass>0.2</mass>
+          <inertia>
+            <ixx>0.0005</ixx>
+            <iyy>0.0005</iyy>
+            <izz>0.0002</izz>
+            <ixy>0</ixy>
+            <ixz>0</ixz>
+            <iyz>0</iyz>
+          </inertia>
+        </inertial>
+        <collision name="target_collision">
+          <geometry>
+            <cylinder>
+              <radius>0.025</radius>
+              <length>0.10</length>
+            </cylinder>
+          </geometry>
+        </collision>
+        <visual name="target_visual">
+          <geometry>
+            <cylinder>
+              <radius>0.025</radius>
+              <length>0.10</length>
+            </cylinder>
+          </geometry>
+          <material>
+            <ambient>0.18 0.55 0.80 1.0</ambient>
+            <diffuse>0.22 0.65 0.92 1.0</diffuse>
+          </material>
+        </visual>
+      </link>
+    </model>
+  </world>
+</sdf>
