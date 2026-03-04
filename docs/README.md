@@ -1,4 +1,4 @@
-# Project Structure
+﻿# Project Structure
 
 This repository follows a common GitHub Python layout:
 
@@ -27,15 +27,15 @@ Notes:
 - `phase2_hardware_kickoff.md`: phase 2 hardware-layer node migration notes and run/verify steps.
 - `phase3_control_kickoff.md`: phase 3 control-layer migration notes (`/control/arm/*`, `MoveArmJoints` action, emergency reset).
 - `phase4_ui_bridge_kickoff.md`: phase 4 UI bridge migration status and verification steps.
-- `phase5_task_kickoff.md`: phase 5 ROS2 task orchestration and runtime profile switching.
+- `phase5_task_kickoff.md`: phase 5 ROS2 task orchestration (`/task/execute_demo`, pause/resume/stop services, UI bridge routing).
+- `phase6_vision_kickoff.md`: phase 6.1 vision integration (`realsense_monitor_node`, `phase6_vision.launch.py`).
+- `windows_vm_split_phaseA.md`: Windows host + Linux VM split deployment (NAT + Host-only + CycloneDDS peer mode).
 - `../CHANGELOG.md`: repository-level change log (phase progress and merged updates).
 
-## Current Refactor Snapshot (2026-03-03)
+## Current Refactor Snapshot (2026-03-04)
 
-- `develop` contains phase 5 stabilization and hardware acceptance fixes.
-- `main` is kept in sync with phase 5 merged baseline.
-- GUI demo commands are routed to ROS2 task Action/Services in ROS2 mode.
-- Bringup supports profile switching with:
-  - `phase5_task.yaml` (simulation/default)
-  - `phase5_task_hardware.yaml` (hardware profile template)
-- Next target: phase 6 stabilization and policy backend migration (SmolVLA integration).
+- `develop` includes phase 6.1 vision ROS2 kickoff scaffolding.
+- `develop` includes phase A deployment scaffolding for Windows hardware nodes + VM app nodes.
+- `main` is synchronized to include the same merged baseline.
+- GUI demo commands are routed to task Action/Services in ROS2 mode.
+- Next target: complete cross-machine ROS2 validation, then migrate hardware nodes to Windows host side.

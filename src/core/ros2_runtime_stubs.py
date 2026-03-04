@@ -387,9 +387,14 @@ class Ros2ControlThread(QThread):
                 self._sensor_simulation = sensor_simulation
 
         if node_name == "arm_driver_node":
-            arm_connected = bool(healthy and "disconnected" not in message)
+            # Keep connection truth source on /arm/state; health is only a fallback.
+            arm_connected_from_health = bool(healthy and "disconnected" not in message)
             with self._lock:
-                self._stm32_connected = arm_connected
+                arm_state_connected = bool(self._arm_snapshot.get("connected", False))
+                arm_state_fresh = (time.time() - float(self._arm_state_received_at)) <= 2.0
+                self._stm32_connected = (
+                    arm_state_connected if arm_state_fresh else arm_connected_from_health
+                )
                 # Arm driver node is always hardware-facing in current phase.
                 self._servo_simulation = False
 

@@ -1,0 +1,10 @@
+realsense_monitor_node:
+  ros__parameters:
+    color_topic: "/camera/camera/color/image_raw"
+    depth_topic: "/camera/camera/aligned_depth_to_color/image_raw"
+    camera_info_topic: "/camera/camera/color/camera_info"
+    health_topic: "/system/health"
+    status_rate_hz: 1.0
+    stale_timeout_sec: 1.5
+    require_depth_stream: false
+

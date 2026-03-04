@@ -421,7 +421,8 @@ class ArmDriverNode(Node):
             self._last_error = ""
         except Exception as exc:
             self._last_error = str(exc)
-            msg.connected = False
+            # A status polling failure does not necessarily mean serial link is down.
+            msg.connected = bool(self.connected)
             msg.moving = False
             msg.error = True
             msg.error_message = f"update_status failed: {exc}"

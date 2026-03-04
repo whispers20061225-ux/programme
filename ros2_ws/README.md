@@ -1,4 +1,4 @@
-# ROS2 Workspace (Phase 1 + Phase 2 + Phase 3 + Phase 4 + Phase 5)
+# ROS2 Workspace (Phase 1 + Phase 2 + Phase 3 + Phase 4 + Phase 5 + Phase 6.1)
 
 This workspace now includes:
 
@@ -7,6 +7,7 @@ This workspace now includes:
 - phase 3: control-layer ROS2 node with safety gate and action/service APIs
 - phase 4: GUI command bridge to ROS2 control-layer services
 - phase 5: task orchestration (`/task/execute_demo` Action + pause/resume/stop services)
+- phase 6.1: vision ROS2 kickoff (`realsense_monitor_node` + `phase6_vision.launch.py`)
 
 ## Workspace layout
 
@@ -19,6 +20,7 @@ ros2_ws/
     tactile_task/
     tactile_bringup/
     tactile_ui_bridge/
+    tactile_vision/
 ```
 
 ## Build (Ubuntu + ROS2 Jazzy)
@@ -143,4 +145,31 @@ ros2 action list | grep /task/execute_demo
 ros2 service list | grep /task/
 ros2 service call /control/arm/enable std_srvs/srv/SetBool "{data: true}"
 ros2 action send_goal /task/execute_demo tactile_interfaces/action/ExecuteDemo "{demo_name: 'vector_visualization', params_json: '{\"duration\": 8}', duration_sec: 8.0}" --feedback
+```
+
+## Run phase 6.1 (vision kickoff)
+
+Important:
+
+- D455 image data comes through USB camera topics, not serial.
+- Keep serial ports for STM32 only.
+
+Terminal A:
+
+```bash
+ros2 launch tactile_bringup phase6_vision.launch.py
+```
+
+If your camera driver is already started elsewhere:
+
+```bash
+ros2 launch tactile_bringup phase6_vision.launch.py start_realsense:=false
+```
+
+Terminal B:
+
+```bash
+ros2 node list | grep -E "realsense2_camera|realsense_monitor_node"
+ros2 topic hz /camera/camera/color/image_raw
+ros2 topic echo /system/health --once
 ```

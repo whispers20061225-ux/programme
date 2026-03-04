@@ -98,6 +98,12 @@ class Ros2PhaseApp:
         tactile_topic: str = "/tactile/raw",
         health_topic: str = "/system/health",
         arm_state_topic: str = "/arm/state",
+        vision_enabled: bool = True,
+        vision_color_topic: str = "/camera/camera/color/image_raw",
+        vision_depth_topic: str = "/camera/camera/aligned_depth_to_color/image_raw",
+        vision_camera_info_topic: str = "/camera/camera/color/camera_info",
+        vision_stale_timeout_sec: float = 1.5,
+        vision_max_fps: float = 15.0,
         control_mode: str = "ros2",
         command_timeout_sec: float = 5.0,
     ):
@@ -107,6 +113,12 @@ class Ros2PhaseApp:
         self.tactile_topic = tactile_topic
         self.health_topic = health_topic
         self.arm_state_topic = arm_state_topic
+        self.vision_enabled = vision_enabled
+        self.vision_color_topic = vision_color_topic
+        self.vision_depth_topic = vision_depth_topic
+        self.vision_camera_info_topic = vision_camera_info_topic
+        self.vision_stale_timeout_sec = vision_stale_timeout_sec
+        self.vision_max_fps = vision_max_fps
         self.control_mode = control_mode
         self.command_timeout_sec = command_timeout_sec
 
@@ -148,6 +160,12 @@ class Ros2PhaseApp:
                 config=self.config,
                 tactile_topic=self.tactile_topic,
                 health_topic=self.health_topic,
+                vision_enabled=self.vision_enabled,
+                color_topic=self.vision_color_topic,
+                depth_topic=self.vision_depth_topic,
+                camera_info_topic=self.vision_camera_info_topic,
+                vision_stale_timeout_sec=self.vision_stale_timeout_sec,
+                vision_max_fps=self.vision_max_fps,
             )
 
             if self.control_mode == "stub":
@@ -177,7 +195,7 @@ class Ros2PhaseApp:
 
             self.app = QApplication(sys.argv)
             self.app.setApplicationName("Tactile Gripper Demo")
-            self.app.setApplicationVersion("2.3.0-phase5-ros2")
+            self.app.setApplicationVersion("2.4.0-phase6-vision")
             self.app.setFont(QFont("Microsoft YaHei", 10))
 
             self.main_window = MainWindow(
@@ -233,6 +251,9 @@ class Ros2PhaseApp:
                 "tactile_topic": self.tactile_topic,
                 "health_topic": self.health_topic,
                 "arm_state_topic": self.arm_state_topic,
+                "vision_enabled": self.vision_enabled,
+                "vision_color_topic": self.vision_color_topic if self.vision_enabled else None,
+                "vision_depth_topic": self.vision_depth_topic if self.vision_enabled else None,
                 "control_mode": self.control_mode,
             },
         )
@@ -275,6 +296,42 @@ def main() -> None:
     parser.add_argument("--health-topic", type=str, default="/system/health", help="ROS2 health topic")
     parser.add_argument("--arm-state-topic", type=str, default="/arm/state", help="ROS2 arm state topic")
     parser.add_argument(
+        "--vision-enabled",
+        type=lambda x: str(x).lower() in ("1", "true", "yes", "y", "on"),
+        default=True,
+        help="Enable ROS2 camera subscriptions for Vision UI",
+    )
+    parser.add_argument(
+        "--vision-color-topic",
+        type=str,
+        default="/camera/camera/color/image_raw",
+        help="ROS2 color image topic",
+    )
+    parser.add_argument(
+        "--vision-depth-topic",
+        type=str,
+        default="/camera/camera/aligned_depth_to_color/image_raw",
+        help="ROS2 depth image topic",
+    )
+    parser.add_argument(
+        "--vision-camera-info-topic",
+        type=str,
+        default="/camera/camera/color/camera_info",
+        help="ROS2 camera info topic",
+    )
+    parser.add_argument(
+        "--vision-stale-timeout-sec",
+        type=float,
+        default=1.5,
+        help="Vision stream stale timeout in seconds",
+    )
+    parser.add_argument(
+        "--vision-max-fps",
+        type=float,
+        default=15.0,
+        help="Max FPS pushed from ROS2 image stream to UI",
+    )
+    parser.add_argument(
         "--control-mode",
         type=str,
         default="ros2",
@@ -308,6 +365,12 @@ def main() -> None:
         tactile_topic=args.tactile_topic,
         health_topic=args.health_topic,
         arm_state_topic=args.arm_state_topic,
+        vision_enabled=args.vision_enabled,
+        vision_color_topic=args.vision_color_topic,
+        vision_depth_topic=args.vision_depth_topic,
+        vision_camera_info_topic=args.vision_camera_info_topic,
+        vision_stale_timeout_sec=args.vision_stale_timeout_sec,
+        vision_max_fps=args.vision_max_fps,
         control_mode=args.control_mode,
         command_timeout_sec=args.command_timeout_sec,
     )

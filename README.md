@@ -43,13 +43,13 @@ programme/
 
 ## 2. 环境准备
 
-建议 Python 3.11。
+建议 Python 3.12。
 
 ### 2.1 Conda（推荐）
 
 ```bash
 conda env create -f environment.yml
-conda activate dayiprogramme
+conda activate dayiprogramme312
 ```
 
 ### 2.2 pip
