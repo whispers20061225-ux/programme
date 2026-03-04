@@ -43,7 +43,8 @@ function Prepend-Path {
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $projectRoot = (Resolve-Path (Join-Path $scriptDir "..\\..")).Path
 $ddsFile = (Resolve-Path (Join-Path $projectRoot "config\\dds\\cyclonedds_windows.xml")).Path
-$ddsUriPath = $ddsFile -replace "\\", "/"
+$ddsRuntimeFile = Join-Path $env:TEMP "programme_cyclonedds_windows.xml"
+Copy-Item -Path $ddsFile -Destination $ddsRuntimeFile -Force
 
 if ($CleanConda) {
     $env:PATH = Remove-CondaEntriesFromPath -PathValue $env:PATH
@@ -105,7 +106,7 @@ if ($WorkspaceSetup -and (Test-Path $WorkspaceSetup)) {
 $env:ROS_DOMAIN_ID = "$DomainId"
 $env:RMW_IMPLEMENTATION = "rmw_cyclonedds_cpp"
 $env:ROS_LOCALHOST_ONLY = "0"
-$env:CYCLONEDDS_URI = "file:///$ddsUriPath"
+$env:CYCLONEDDS_URI = $ddsRuntimeFile
 
 Write-Host "ROS2 Windows environment ready."
 Write-Host "ROS_DOMAIN_ID=$env:ROS_DOMAIN_ID"
