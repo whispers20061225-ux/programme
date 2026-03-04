@@ -29,12 +29,14 @@ Notes:
 - `phase4_ui_bridge_kickoff.md`: phase 4 UI bridge migration status and verification steps.
 - `phase5_task_kickoff.md`: phase 5 ROS2 task orchestration (`/task/execute_demo`, pause/resume/stop services, UI bridge routing).
 - `phase6_vision_kickoff.md`: phase 6.1 vision integration (`realsense_monitor_node`, `phase6_vision.launch.py`).
+- `windows_vm_split_phaseA.md`: Windows host + Linux VM split deployment (NAT + Host-only + CycloneDDS peer mode).
 - `../CHANGELOG.md`: repository-level change log (phase progress and merged updates).
 - `ros2_refactor_plan.md` includes SmolVLA policy migration and legacy AI fallback strategy.
 
-## Current Refactor Snapshot (2026-03-03)
+## Current Refactor Snapshot (2026-03-04)
 
 - `develop` now includes phase 6.1 vision ROS2 kickoff scaffolding.
+- `develop` now includes phase A deployment scaffolding for Windows hardware nodes + VM app nodes.
 - `main` currently tracks phase 5 merged baseline.
 - GUI demo commands are routed to task Action/Services in ROS2 mode.
-- Next target: phase 6.2 Gazebo simulation + MoveIt2 planning + SmolVLA shadow policy.
+- Next target: complete cross-machine ROS2 validation, then migrate hardware nodes to Windows host side.

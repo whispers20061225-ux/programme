@@ -6,6 +6,19 @@ All notable project updates are recorded in this file.
 
 - Next planned step:
   - Phase 6.2 Gazebo + MoveIt2 + SmolVLA shadow-policy integration.
+- Windows + VM split deployment kickoff (Phase A):
+  - Added CycloneDDS peer-mode templates:
+    - `config/dds/cyclonedds_windows.xml`
+    - `config/dds/cyclonedds_vm.xml`
+  - Added deployment scripts:
+    - `deploy/windows/env_ros2_windows.ps1`
+    - `deploy/windows/check_connectivity.ps1`
+    - `deploy/windows/start_hw_nodes.ps1`
+    - `deploy/vm/env_ros2_vm.sh`
+    - `deploy/vm/check_connectivity.sh`
+  - Added runbook:
+    - `docs/windows_vm_split_phaseA.md`
+  - Goal: keep NAT for internet, use Host-only for deterministic ROS2 communication.
 - Phase 6.1 kickoff:
   - Added package `tactile_vision` with `realsense_monitor_node`.
   - Added `phase6_vision.launch.py` and `phase6_vision.yaml`.
