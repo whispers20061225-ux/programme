@@ -1,5 +1,7 @@
 param(
+    [string]$RosSetup = "C:\\opt\\ros\\jazzy\\x64\\local_setup.ps1",
     [string]$WorkspaceSetup = "",
+    [int]$DomainId = 0,
     [string]$ArmParamFile = "",
     [string]$RealsenseSerial = "_333422301846",
     [switch]$StartArm = $true,
@@ -9,7 +11,7 @@ param(
 
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 
-. (Join-Path $scriptDir "env_ros2_windows.ps1") -WorkspaceSetup $WorkspaceSetup
+. (Join-Path $scriptDir "env_ros2_windows.ps1") -RosSetup $RosSetup -WorkspaceSetup $WorkspaceSetup -DomainId $DomainId
 
 $realsenseCmd = @(
     "ros2 run realsense2_camera realsense2_camera_node --ros-args",
@@ -44,11 +46,16 @@ if (-not $Execute) {
 }
 
 if ($StartRealsense) {
-    Start-Process pwsh -ArgumentList "-NoExit", "-Command", "& { . `"$scriptDir\\env_ros2_windows.ps1`"; $realsenseCmd }"
+    $realsenseLaunch = "& { . `"$scriptDir\\env_ros2_windows.ps1`" -RosSetup `"$RosSetup`" -DomainId $DomainId"
+    if ($WorkspaceSetup) {
+        $realsenseLaunch += " -WorkspaceSetup `"$WorkspaceSetup`""
+    }
+    $realsenseLaunch += "; $realsenseCmd }"
+    Start-Process pwsh -ArgumentList "-NoExit", "-Command", $realsenseLaunch
 }
 
 if ($StartArm) {
-    $armLaunch = "& { . `"$scriptDir\\env_ros2_windows.ps1`""
+    $armLaunch = "& { . `"$scriptDir\\env_ros2_windows.ps1`" -RosSetup `"$RosSetup`" -DomainId $DomainId"
     if ($WorkspaceSetup) {
         $armLaunch += " -WorkspaceSetup `"$WorkspaceSetup`""
     }

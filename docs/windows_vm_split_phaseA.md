@@ -42,13 +42,13 @@ Phase A only covers network + middleware validation. No business logic changes.
 cd <repo_root>
 
 # 1) Load ROS2 + DDS env
-. .\deploy\windows\env_ros2_windows.ps1 -DomainId 0
+. .\deploy\windows\env_ros2_windows.ps1 -DomainId 0 -RosSetup <your_ros2_setup.ps1_or_local_setup.bat>
 
 # 2) Basic connectivity check (ping only)
-. .\deploy\windows\check_connectivity.ps1 -VmIp 192.168.56.20
+. .\deploy\windows\check_connectivity.ps1 -VmIp 192.168.56.20 -RosSetup <your_ros2_setup.ps1_or_local_setup.bat>
 
 # 3) DDS validation (Windows as talker)
-. .\deploy\windows\check_connectivity.ps1 -VmIp 192.168.56.20 -RunTalker
+. .\deploy\windows\check_connectivity.ps1 -VmIp 192.168.56.20 -RosSetup <your_ros2_setup.ps1_or_local_setup.bat> -RunTalker
 ```
 
 ## Linux VM Commands

@@ -10,7 +10,23 @@ $ddsFile = (Resolve-Path (Join-Path $projectRoot "config\\dds\\cyclonedds_window
 $ddsUriPath = $ddsFile -replace "\\", "/"
 
 if (Test-Path $RosSetup) {
-    . $RosSetup
+    $ext = [System.IO.Path]::GetExtension($RosSetup).ToLowerInvariant()
+    if ($ext -eq ".ps1") {
+        . $RosSetup
+    } elseif ($ext -eq ".bat" -or $ext -eq ".cmd") {
+        $dump = cmd.exe /c "call `"$RosSetup`" && set"
+        foreach ($line in $dump) {
+            if ($line -match "^(.*?)=(.*)$") {
+                $name = $matches[1]
+                $value = $matches[2]
+                if ($name) {
+                    [System.Environment]::SetEnvironmentVariable($name, $value, "Process")
+                }
+            }
+        }
+    } else {
+        Write-Warning "Unsupported ROS2 setup script type: $RosSetup"
+    }
 } else {
     Write-Warning "ROS2 setup script not found: $RosSetup"
 }
