@@ -169,8 +169,7 @@ function Invoke-StartRealsenseOnly {
         $RosSetupPath,
         "-DomainId",
         $RosDomainId.ToString(),
-        "-WarmupRosGraph",
-        $WarmupGraph.ToString(),
+        ("-WarmupRosGraph:$($WarmupGraph.ToString().ToLowerInvariant())"),
         "-Execute"
     )
     if ($WorkspaceSetupPath) {
