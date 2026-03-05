@@ -34,8 +34,11 @@ function Read-TextSafe {
     if (-not (Test-Path $Path)) {
         return ""
     }
-    $content = [string](Get-Content -Raw -Path $Path -ErrorAction SilentlyContinue)
-    return $content.Trim()
+    $contentObj = Get-Content -Raw -Path $Path -ErrorAction SilentlyContinue
+    if ($null -eq $contentObj) {
+        return ""
+    }
+    return ([string]$contentObj).Trim()
 }
 
 function Wait-Topic {
