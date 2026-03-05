@@ -151,3 +151,31 @@ Interpretation:
 
 - If Windows high + VM low: cross-machine DDS/network path is the bottleneck.
 - If both low: Windows publisher/camera pipeline is the bottleneck.
+
+## 15-Minute Soak Test (Recommended)
+
+Use this for your current stability check target (15 minutes).
+
+1. Keep Windows RealSense publisher running.
+
+2. Windows side soak:
+
+```powershell
+cd $PROJECT_ROOT
+. .\deploy\windows\soak_realsense_hz.ps1 -RosSetup "C:\pixi_ws\ros2-windows\ros2-windows\local_setup.bat" -WorkspaceSetup ".\ros2_ws\install\local_setup.ps1" -DomainId 0 -DurationMin 15 -IntervalSec 60 -SampleSec 8
+```
+
+3. VM side soak:
+
+```bash
+cd /home/zhuyiwei/programme/programme
+bash deploy/vm/soak_realsense_hz.sh 0 15 60 8 30
+```
+
+Outputs:
+
+- Windows CSV: `ros2_ws/log/soak/windows_soak_*.csv`
+- VM CSV: `ros2_ws/log/soak/vm_soak_*.csv`
+- Both scripts print summary lines:
+  - average/min/max fps
+  - `<1Hz` sample ratio
