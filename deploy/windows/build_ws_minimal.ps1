@@ -29,31 +29,51 @@ function Import-VsBuildEnv {
         (Join-Path $env:ProgramFiles "Microsoft Visual Studio\\Installer\\vswhere.exe")
     ) | Where-Object { $_ -and (Test-Path $_) }
 
-    if ($vswhereCandidates.Count -eq 0) {
+    $vswhereList = @($vswhereCandidates)
+
+    if ($vswhereList.Count -eq 0) {
         Write-Error "vswhere.exe not found. Install Visual Studio Build Tools first."
         Write-Host "Install hint:"
         Write-Host "  winget install -e --id Microsoft.VisualStudio.2022.BuildTools --override `"--wait --passive --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended`""
         return $false
     }
 
-    $vswhere = $vswhereCandidates[0]
-    $installPath = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath | Select-Object -First 1
+    $vswhere = $vswhereList[0]
+    $allInstallPaths = @(
+        & $vswhere -all -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+    ) | Where-Object { $_ }
 
-    if (-not $installPath) {
+    if ($allInstallPaths.Count -eq 0) {
         Write-Error "No Visual Studio instance with VC++ tools found."
         Write-Host "Install hint:"
         Write-Host "  winget install -e --id Microsoft.VisualStudio.2022.BuildTools --override `"--wait --passive --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended`""
         return $false
     }
 
-    $devCmdCandidates = @(
-        (Join-Path $installPath "Common7\\Tools\\VsDevCmd.bat"),
-        (Join-Path $installPath "Common7\\Tools\\LaunchDevCmd.bat")
-    ) | Where-Object { Test-Path $_ }
+    $devCmdCandidates = @()
+    foreach ($installPath in $allInstallPaths) {
+        $devCmdCandidates += @(
+            (Join-Path $installPath "Common7\\Tools\\VsDevCmd.bat"),
+            (Join-Path $installPath "Common7\\Tools\\LaunchDevCmd.bat")
+        )
+    }
+    $devCmdCandidates += @(
+        (Join-Path $env:ProgramFiles "Microsoft Visual Studio\\2022\\BuildTools\\Common7\\Tools\\VsDevCmd.bat"),
+        (Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio\\2022\\BuildTools\\Common7\\Tools\\VsDevCmd.bat"),
+        (Join-Path $env:ProgramFiles "Microsoft Visual Studio\\2022\\Community\\Common7\\Tools\\VsDevCmd.bat"),
+        (Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio\\2022\\Community\\Common7\\Tools\\VsDevCmd.bat")
+    )
+    $devCmdCandidates = @($devCmdCandidates | Where-Object { $_ -and (Test-Path $_) } | Select-Object -Unique)
 
     if ($devCmdCandidates.Count -eq 0) {
-        Write-Error "VC tools env script not found under: $installPath"
+        Write-Error "VC tools env script not found in discovered VS instances."
+        Write-Host "Detected VS install paths:"
+        foreach ($p in $allInstallPaths) {
+            Write-Host "  - $p"
+        }
         Write-Host "Install/repair Visual Studio C++ workload, then rerun."
+        Write-Host "Install hint:"
+        Write-Host "  winget install -e --id Microsoft.VisualStudio.2022.BuildTools --override `"--wait --passive --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended`""
         return $false
     }
 
@@ -106,4 +126,3 @@ finally {
 }
 
 Write-Host "Build finished successfully."
-
