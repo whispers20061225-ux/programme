@@ -51,6 +51,15 @@ colcon build --merge-install --symlink-install --packages-select tactile_interfa
 
 After build, `ros2_ws\install\local_setup.bat` will be auto-detected by `start_hw_nodes.ps1`.
 
+If you hit `VisualStudioVersion is not set`, use the helper script instead:
+
+```powershell
+cd C:\Users\whisp\Desktop\大一年度项目\programme
+. .\deploy\windows\build_ws_minimal.ps1 -RosSetup C:\pixi_ws\ros2-windows\ros2-windows\local_setup.bat -DomainId 0
+```
+
+This script tries to auto-load MSVC build environment and gives an install hint if VC++ tools are missing.
+
 ## Windows Host Commands
 
 ```powershell
