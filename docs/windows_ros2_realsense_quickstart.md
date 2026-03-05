@@ -97,3 +97,20 @@ Interpretation:
    - This is acceptable in current flow.
    - Script auto-falls back to:
      - `tactile_vision/realsense_camera_node`
+
+## VM One-Command Validation
+
+After Windows node is running, validate from VM:
+
+```bash
+cd /home/zhuyiwei/programme/programme
+bash deploy/vm/test_realsense_stream.sh 0 20 12 3.0 3.0
+```
+
+Parameters:
+
+- `0`: `ROS_DOMAIN_ID`
+- `20`: topic discovery timeout (seconds)
+- `12`: hz sampling duration (seconds)
+- `3.0`: minimum acceptable color fps
+- `3.0`: minimum acceptable depth fps
