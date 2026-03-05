@@ -25,11 +25,45 @@ is_true() { [[ "${1,,}" == "true" || "${1}" == "1" || "${1,,}" == "yes" ]]; }
 
 wait_for_topic() {
   local topic="$1"
+  local topic_alt="${topic#/}"
   local timeout_sec="$2"
   local elapsed=0
   while (( elapsed < timeout_sec )); do
-    if ros2 topic list | grep -Fxq "${topic}"; then
+    local topics
+    topics="$(ros2 topic list 2>/dev/null || true)"
+    if echo "${topics}" | grep -Fxq "${topic}" \
+      || echo "${topics}" | grep -Fxq "${topic_alt}" \
+      || echo "${topics}" | grep -Fxq "/${topic_alt}"; then
       return 0
+    fi
+    sleep 1
+    elapsed=$((elapsed + 1))
+  done
+  return 1
+}
+
+wait_for_message() {
+  local topic="$1"
+  local topic_alt="${topic#/}"
+  local timeout_sec="$2"
+  local elapsed=0
+  while (( elapsed < timeout_sec )); do
+    local rc=1
+    set +e
+    timeout 2s ros2 topic echo "${topic}" --once >/dev/null 2>&1
+    rc=$?
+    set -e
+    if [[ ${rc} -eq 0 ]]; then
+      return 0
+    fi
+    if [[ "${topic_alt}" != "${topic}" ]]; then
+      set +e
+      timeout 2s ros2 topic echo "${topic_alt}" --once >/dev/null 2>&1
+      rc=$?
+      set -e
+      if [[ ${rc} -eq 0 ]]; then
+        return 0
+      fi
     fi
     sleep 1
     elapsed=$((elapsed + 1))
@@ -98,6 +132,15 @@ check_rate_ge() {
   awk -v r="${actual}" -v m="${minimum}" 'BEGIN { exit ((r + 0.0 >= m + 0.0) ? 0 : 1) }'
 }
 
+dump_runtime_diagnostics() {
+  echo "[DIAG] ros2 node list:"
+  ros2 node list 2>/dev/null || true
+  echo "[DIAG] ros2 topic list (filtered):"
+  ros2 topic list 2>/dev/null | grep -E 'tactile|arm|camera|health' || true
+  echo "[DIAG] tail launch log:"
+  tail -n 120 "${LAUNCH_LOG_FILE}" 2>/dev/null || true
+}
+
 cleanup() {
   if [[ -n "${LAUNCH_PID:-}" ]] && kill -0 "${LAUNCH_PID}" 2>/dev/null; then
     if [[ "${KEEP_LAUNCH}" == "true" ]]; then
@@ -124,6 +167,9 @@ log_ok "cross-machine camera link is healthy"
 log_step "loading VM ROS2 environment"
 # shellcheck disable=SC1091
 source "${SCRIPT_DIR}/env_ros2_vm.sh" "${DOMAIN_ID}"
+# refresh daemon cache to reduce stale graph false-negative
+ros2 daemon stop >/dev/null 2>&1 || true
+ros2 daemon start >/dev/null 2>&1 || true
 
 mkdir -p "${LAUNCH_LOG_DIR}"
 log_step "starting split_vm_app.launch.py in background"
@@ -157,18 +203,24 @@ log_ok "VM core nodes are online"
 
 if is_true "${START_TACTILE_SENSOR}"; then
   log_step "validating tactile simulation stream"
-  if ! wait_for_topic "/tactile/raw" 15; then
-    log_fail "topic /tactile/raw is missing."
-    log_fail "Check tactile sensor config in split_vm_app.yaml"
+  if ! wait_for_message "/tactile/raw" 20; then
+    log_fail "no tactile message received on /tactile/raw."
+    log_fail "Check tactile sensor config/runtime in split_vm_app.launch.py"
+    dump_runtime_diagnostics
     exit 1
   fi
   tactile_hz="$(sample_hz "/tactile/raw" 8 || true)"
   if [[ -z "${tactile_hz}" ]]; then
+    tactile_hz="$(sample_hz "tactile/raw" 8 || true)"
+  fi
+  if [[ -z "${tactile_hz}" ]]; then
     log_fail "unable to measure tactile hz on /tactile/raw"
+    dump_runtime_diagnostics
     exit 1
   fi
   if ! check_rate_ge "${tactile_hz}" "${MIN_TACTILE_HZ}"; then
     log_fail "tactile hz ${tactile_hz} < min ${MIN_TACTILE_HZ}"
+    dump_runtime_diagnostics
     exit 1
   fi
   log_ok "tactile stream is healthy: ${tactile_hz}Hz"
