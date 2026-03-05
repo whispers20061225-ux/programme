@@ -12,6 +12,9 @@
     <Discovery>
       <ParticipantIndex>auto</ParticipantIndex>
       <Peers>
+        <!-- VM local peers: keep local node discovery stable when multicast is disabled -->
+        <Peer Address="127.0.0.1" />
+        <Peer Address="192.168.147.128" />
         <!-- Replace address with your Windows host-only adapter IPv4 -->
         <Peer Address="192.168.147.1" />
       </Peers>

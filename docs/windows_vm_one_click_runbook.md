@@ -90,3 +90,9 @@ bash deploy/vm/start_ui_with_realsense_guard.sh 0 20 12 3.0 3.0 true dayiprogram
    - `python -m pip install pyrealsense2`
 3. Windows build reports missing `pkg_resources`:
    - `python -m pip install "setuptools<81"`
+4. VM one-click script exits after guard failure (`/tactile/raw` missing) while launch log shows nodes started:
+   - check `config/dds/cyclonedds_vm.xml`
+   - ensure VM local peers exist when `AllowMulticast=false`:
+     - `<Peer Address="127.0.0.1" />`
+     - `<Peer Address="<VM_HOST_ONLY_IP>" />`
+   - then rerun one-click script
