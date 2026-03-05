@@ -32,6 +32,7 @@ Notes:
 - `windows_vm_split_phaseA.md`: Windows host + Linux VM split deployment (NAT + Host-only + CycloneDDS peer mode).
 - `windows_vm_split_phaseB.md`: Phase B split deployment (Windows hardware nodes + VM app/control nodes).
 - `windows_ros2_realsense_quickstart.md`: Windows-side ROS2 RealSense node quickstart (build/start/verify/troubleshooting commands).
+- `windows_vm_one_click_runbook.md`: one-click runbook for Windows hardware bringup and VM end-to-end debug startup.
 - `../CHANGELOG.md`: repository-level change log (phase progress and merged updates).
 - `ros2_refactor_plan.md` includes SmolVLA policy migration and legacy AI fallback strategy.
 
