@@ -3,7 +3,7 @@ param(
     [string]$WorkspaceSetup = "",
     [int]$DomainId = 0,
     [string]$ArmParamFile = "",
-    [string]$RealsenseSerial = "_333422301846",
+    [string]$RealsenseSerial = "",
     [switch]$StartArm = $true,
     [switch]$StartRealsense = $true,
     [switch]$Execute = $false
@@ -62,15 +62,18 @@ $hasArmPkg = Test-RosPackage -PackageName "tactile_hardware"
 if ($StartRealsense) {
     if ($hasRealsensePkg) {
         $realsenseMode = "realsense2_camera"
-        $realsenseCmd = @(
+        $realsenseArgs = @(
             "ros2 run realsense2_camera realsense2_camera_node --ros-args",
-            "-p serial_no:=$RealsenseSerial",
             "-p enable_color:=true",
             "-p enable_depth:=true",
             "-p align_depth.enable:=true",
             "-p rgb_camera.profile:=640x480x15",
             "-p depth_module.profile:=640x480x15"
-        ) -join " "
+        )
+        if ($RealsenseSerial) {
+            $realsenseArgs += "-p serial_no:=$RealsenseSerial"
+        }
+        $realsenseCmd = $realsenseArgs -join " "
     } elseif ($hasRealsenseFallbackPkg) {
         if (-not (Test-PythonModule -ModuleName "pyrealsense2")) {
             Write-Warning "Fallback node requires python module 'pyrealsense2', but it is missing."
@@ -79,9 +82,8 @@ if ($StartRealsense) {
             $StartRealsense = $false
         } else {
         $realsenseMode = "tactile_vision.realsense_camera_node"
-        $realsenseCmd = @(
+        $realsenseArgs = @(
             "ros2 run tactile_vision realsense_camera_node --ros-args",
-            "-p serial_no:=$RealsenseSerial",
             "-p enable_color:=true",
             "-p enable_depth:=true",
             "-p align_depth.enable:=true",
@@ -91,7 +93,11 @@ if ($StartRealsense) {
             "-p depth_width:=640",
             "-p depth_height:=480",
             "-p depth_fps:=15"
-        ) -join " "
+        )
+        if ($RealsenseSerial) {
+            $realsenseArgs += "-p serial_no:=$RealsenseSerial"
+        }
+        $realsenseCmd = $realsenseArgs -join " "
         Write-Warning "Package 'realsense2_camera' not found. Falling back to tactile_vision/realsense_camera_node."
         }
     } else {

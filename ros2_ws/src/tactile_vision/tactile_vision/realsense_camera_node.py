@@ -93,7 +93,21 @@ class RealsenseCameraNode(Node):
         if self.enable_color and self.enable_depth and self.align_depth:
             self.aligner = rs.align(rs.stream.color)
 
-        self.profile = self.pipeline.start(self.config)
+        try:
+            self.profile = self.pipeline.start(self.config)
+        except Exception as exc:
+            detected = self._detect_realsense_devices()
+            requested = self.serial_no or "auto"
+            if detected:
+                raise RuntimeError(
+                    "Failed to start RealSense pipeline: "
+                    f"requested_serial={requested}, detected={detected}, error={exc}"
+                ) from exc
+            raise RuntimeError(
+                "No RealSense device detected by pyrealsense2. "
+                f"requested_serial={requested}. Check USB ownership (VM), cable, and Intel RealSense driver."
+            ) from exc
+
         self.color_info_template = self._make_camera_info_template(rs.stream.color, self.color_frame_id)
 
         publish_hz = max(self.color_fps if self.enable_color else 0, self.depth_fps if self.enable_depth else 0, 5)
@@ -104,6 +118,29 @@ class RealsenseCameraNode(Node):
             f"serial={self.serial_no or 'auto'}, color={self.enable_color}, depth={self.enable_depth}, "
             f"align_depth={self.align_depth}, color_topic={self.color_topic}, depth_topic={self.depth_topic}"
         )
+
+    @staticmethod
+    def _detect_realsense_devices() -> list[str]:
+        devices = []
+        try:
+            ctx = rs.context()
+            for dev in ctx.query_devices():
+                name = "unknown"
+                serial = "unknown"
+                try:
+                    if dev.supports(rs.camera_info.name):
+                        name = dev.get_info(rs.camera_info.name)
+                except Exception:
+                    pass
+                try:
+                    if dev.supports(rs.camera_info.serial_number):
+                        serial = dev.get_info(rs.camera_info.serial_number)
+                except Exception:
+                    pass
+                devices.append(f"{name}:{serial}")
+        except Exception:
+            pass
+        return devices
 
     def _make_camera_info_template(self, stream_type: "rs.stream", frame_id: str) -> Optional[CameraInfo]:
         try:
@@ -238,4 +275,3 @@ def main(args=None) -> None:
 
 if __name__ == "__main__":
     main()
-

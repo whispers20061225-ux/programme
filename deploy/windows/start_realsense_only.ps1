@@ -2,7 +2,7 @@ param(
     [string]$RosSetup = "C:\\opt\\ros\\jazzy\\x64\\local_setup.ps1",
     [string]$WorkspaceSetup = "",
     [int]$DomainId = 0,
-    [string]$RealsenseSerial = "_333422301846",
+    [string]$RealsenseSerial = "",
     [switch]$Execute = $false
 )
 
@@ -16,4 +16,3 @@ $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
     -StartArm:$false `
     -StartRealsense:$true `
     -Execute:$Execute
-
