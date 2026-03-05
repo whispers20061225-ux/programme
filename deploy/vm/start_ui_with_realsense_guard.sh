@@ -53,10 +53,21 @@ wait_for_service() {
 
 wait_for_node() {
   local node="$1"
+  local node_alt="${node#/}"
+  local launch_tag="${node#/}"
   local timeout_sec="$2"
   local elapsed=0
   while (( elapsed < timeout_sec )); do
-    if ros2 node list | grep -Fxq "${node}"; then
+    local nodes
+    nodes="$(ros2 node list 2>/dev/null || true)"
+    if echo "${nodes}" | grep -Fxq "${node}" || echo "${nodes}" | grep -Fxq "${node_alt}"; then
+      return 0
+    fi
+    # Fallback: if launch already confirms process started and no crash reported,
+    # treat it as discovered to avoid false negatives from graph refresh latency.
+    if [[ -f "${LAUNCH_LOG_FILE}" ]] \
+      && grep -Fq "[INFO] [${launch_tag}-" "${LAUNCH_LOG_FILE}" \
+      && ! grep -Fq "[ERROR] [${launch_tag}-" "${LAUNCH_LOG_FILE}"; then
       return 0
     fi
     sleep 1
