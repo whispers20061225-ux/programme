@@ -8,7 +8,8 @@ param(
     [double]$MinColorHz = 3.0,
     [double]$MinDepthHz = 3.0,
     [int]$StartupRetryCount = 3,
-    [int]$RetryBackoffSec = 4
+    [int]$RetryBackoffSec = 4,
+    [int]$LauncherTimeoutSec = 25
 )
 
 $ErrorActionPreference = "Stop"
@@ -18,6 +19,13 @@ function Write-Step([string]$msg) { Write-Host "[STEP] $msg" }
 function Write-Ok([string]$msg) { Write-Host "[OK] $msg" -ForegroundColor Green }
 function Write-WarnMsg([string]$msg) { Write-Host "[WARN] $msg" -ForegroundColor Yellow }
 function Write-Fail([string]$msg) { Write-Host "[FAIL] $msg" -ForegroundColor Red }
+
+function Get-PreferredShell {
+    if (Get-Command pwsh -ErrorAction SilentlyContinue) {
+        return "pwsh"
+    }
+    return "powershell"
+}
 
 function Wait-Topic {
     param(
@@ -122,6 +130,77 @@ function Stop-RealsenseProcesses {
     }
 }
 
+function Invoke-StartRealsenseOnly {
+    param(
+        [string]$RosSetupPath,
+        [string]$WorkspaceSetupPath,
+        [int]$RosDomainId,
+        [string]$SerialNo,
+        [int]$TimeoutSec
+    )
+
+    $shellExe = Get-PreferredShell
+    $scriptPath = Join-Path $scriptDir "start_realsense_only.ps1"
+    $outFile = Join-Path $env:TEMP ("programme_rs_launch_" + [guid]::NewGuid().ToString() + ".out.log")
+    $errFile = Join-Path $env:TEMP ("programme_rs_launch_" + [guid]::NewGuid().ToString() + ".err.log")
+    $argList = @(
+        "-NoLogo",
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        $scriptPath,
+        "-RosSetup",
+        $RosSetupPath,
+        "-DomainId",
+        $RosDomainId.ToString(),
+        "-Execute"
+    )
+    if ($WorkspaceSetupPath) {
+        $argList += @("-WorkspaceSetup", $WorkspaceSetupPath)
+    }
+    if ($SerialNo) {
+        $argList += @("-RealsenseSerial", $SerialNo)
+    }
+
+    try {
+        $proc = Start-Process -FilePath $shellExe -ArgumentList $argList -PassThru -RedirectStandardOutput $outFile -RedirectStandardError $errFile -WindowStyle Hidden
+        $exited = $proc.WaitForExit($TimeoutSec * 1000)
+
+        if (-not $exited) {
+            Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
+            $stdout = if (Test-Path $outFile) { (Get-Content -Raw $outFile).Trim() } else { "" }
+            $stderr = if (Test-Path $errFile) { (Get-Content -Raw $errFile).Trim() } else { "" }
+            return [PSCustomObject]@{
+                Success = $false
+                Message = "launcher timed out after ${TimeoutSec}s"
+                Stdout  = $stdout
+                Stderr  = $stderr
+            }
+        }
+
+        $stdout = if (Test-Path $outFile) { (Get-Content -Raw $outFile).Trim() } else { "" }
+        $stderr = if (Test-Path $errFile) { (Get-Content -Raw $errFile).Trim() } else { "" }
+        if ($proc.ExitCode -ne 0) {
+            return [PSCustomObject]@{
+                Success = $false
+                Message = "launcher exit code $($proc.ExitCode)"
+                Stdout  = $stdout
+                Stderr  = $stderr
+            }
+        }
+        return [PSCustomObject]@{
+            Success = $true
+            Message = "launcher exited cleanly"
+            Stdout  = $stdout
+            Stderr  = $stderr
+        }
+    }
+    finally {
+        Remove-Item $outFile, $errFile -Force -ErrorAction SilentlyContinue
+    }
+}
+
 function Test-RealsenseReady {
     param(
         [string]$ColorTopic,
@@ -133,20 +212,26 @@ function Test-RealsenseReady {
         [double]$MinDepth
     )
 
+    Write-Step "checking topic availability: $ColorTopic (${TopicWaitSec}s)"
     if (-not (Wait-Topic -TopicName $ColorTopic -TimeoutSec $TopicWaitSec)) {
         return [PSCustomObject]@{ Success = $false; Message = "color topic not discovered: $ColorTopic"; ColorHz = $null; DepthHz = $null }
     }
+    Write-Step "checking topic availability: $DepthTopic (${TopicWaitSec}s)"
     if (-not (Wait-Topic -TopicName $DepthTopic -TimeoutSec $TopicWaitSec)) {
         return [PSCustomObject]@{ Success = $false; Message = "depth topic not discovered: $DepthTopic"; ColorHz = $null; DepthHz = $null }
     }
+    Write-Step "checking topic availability: $InfoTopic (${TopicWaitSec}s)"
     if (-not (Wait-Topic -TopicName $InfoTopic -TimeoutSec $TopicWaitSec)) {
         return [PSCustomObject]@{ Success = $false; Message = "camera_info topic not discovered: $InfoTopic"; ColorHz = $null; DepthHz = $null }
     }
+    Write-Step "checking camera_info message once"
     if (-not (Wait-MessageOnce -TopicName $InfoTopic -TimeoutSec 8)) {
         return [PSCustomObject]@{ Success = $false; Message = "camera_info message not received"; ColorHz = $null; DepthHz = $null }
     }
 
+    Write-Step "sampling color topic hz (${SampleWindowSec}s)"
     $colorHz = Get-TopicAverageHz -TopicName $ColorTopic -SampleSec $SampleWindowSec
+    Write-Step "sampling depth topic hz (${SampleWindowSec}s)"
     $depthHz = Get-TopicAverageHz -TopicName $DepthTopic -SampleSec $SampleWindowSec
     if ($null -eq $colorHz) {
         return [PSCustomObject]@{ Success = $false; Message = "unable to calculate color hz"; ColorHz = $null; DepthHz = $depthHz }
@@ -180,12 +265,37 @@ for ($attempt = 1; $attempt -le $StartupRetryCount; $attempt++) {
     Write-Step "RealSense startup attempt $attempt/$StartupRetryCount"
     Stop-RealsenseProcesses
 
-    . (Join-Path $scriptDir "start_realsense_only.ps1") `
-        -RosSetup $RosSetup `
-        -WorkspaceSetup $WorkspaceSetup `
-        -DomainId $DomainId `
-        -RealsenseSerial $RealsenseSerial `
-        -Execute
+    Write-Step "spawning RealSense launcher (timeout=${LauncherTimeoutSec}s)"
+    $launchResult = Invoke-StartRealsenseOnly `
+        -RosSetupPath $RosSetup `
+        -WorkspaceSetupPath $WorkspaceSetup `
+        -RosDomainId $DomainId `
+        -SerialNo $RealsenseSerial `
+        -TimeoutSec $LauncherTimeoutSec
+    if (-not $launchResult.Success) {
+        Write-WarnMsg ("attempt $attempt launcher failed: " + $launchResult.Message)
+        if ($launchResult.Stdout) {
+            Write-Host "[DIAG][launcher stdout]"
+            Write-Host $launchResult.Stdout
+        }
+        if ($launchResult.Stderr) {
+            Write-Host "[DIAG][launcher stderr]"
+            Write-Host $launchResult.Stderr
+        }
+        $lastResult = [PSCustomObject]@{
+            Success = $false
+            Message = "launcher failed: $($launchResult.Message)"
+            ColorHz = $null
+            DepthHz = $null
+        }
+        if ($attempt -lt $StartupRetryCount) {
+            Start-Sleep -Seconds $RetryBackoffSec
+            continue
+        }
+        break
+    }
+
+    Write-Ok "RealSense launcher returned, waiting for graph stabilization"
 
     Start-Sleep -Seconds 3
 
@@ -210,7 +320,8 @@ for ($attempt = 1; $attempt -le $StartupRetryCount; $attempt++) {
     }
 }
 
-Write-Fail ("RealSense did not reach ready state after {0} attempts. Last error: {1}" -f $StartupRetryCount, $lastResult.Message)
+$lastMessage = if ($lastResult -and $lastResult.Message) { $lastResult.Message } else { "unknown failure" }
+Write-Fail ("RealSense did not reach ready state after {0} attempts. Last error: {1}" -f $StartupRetryCount, $lastMessage)
 Write-Host "[DIAG] current camera topics:"
 & ros2 topic list | Select-String "camera/camera"
 exit 1
