@@ -171,6 +171,11 @@ source "${SCRIPT_DIR}/env_ros2_vm.sh" "${DOMAIN_ID}"
 ros2 daemon stop >/dev/null 2>&1 || true
 ros2 daemon start >/dev/null 2>&1 || true
 
+log_step "cleaning stale VM ROS2 processes"
+pkill -f "split_vm_app.launch.py" >/dev/null 2>&1 || true
+pkill -f "latest_frame_relay_node" >/dev/null 2>&1 || true
+sleep 1
+
 mkdir -p "${LAUNCH_LOG_DIR}"
 log_step "starting split_vm_app.launch.py in background"
 ros2 launch tactile_bringup split_vm_app.launch.py start_tactile_sensor:="${START_TACTILE_SENSOR}" >"${LAUNCH_LOG_FILE}" 2>&1 &
@@ -185,7 +190,7 @@ log_ok "split_vm_app.launch.py running (pid=${LAUNCH_PID})"
 echo "[INFO] launch log: ${LAUNCH_LOG_FILE}"
 
 log_step "validating VM-side core nodes"
-for node in "/arm_control_node" "/demo_task_node" "/tactile_ui_subscriber" "/realsense_monitor_node"; do
+for node in "/arm_control_node" "/demo_task_node" "/tactile_ui_subscriber" "/latest_frame_relay_node" "/realsense_monitor_node"; do
   if ! wait_for_node "${node}" 15; then
     log_fail "required VM node missing: ${node}"
     log_fail "Check launch log: ${LAUNCH_LOG_FILE}"
@@ -200,6 +205,17 @@ if is_true "${START_TACTILE_SENSOR}"; then
   fi
 fi
 log_ok "VM core nodes are online"
+
+log_step "validating relay camera topics for UI path"
+for topic in "/camera/relay/color/image_raw" "/camera/relay/aligned_depth_to_color/image_raw" "/camera/relay/color/camera_info"; do
+  if ! wait_for_topic "${topic}" 15; then
+    log_fail "required relay topic missing: ${topic}"
+    log_fail "Check latest_frame_relay_node and split_vm_app.yaml topic mapping."
+    dump_runtime_diagnostics
+    exit 1
+  fi
+done
+log_ok "relay camera topics are online"
 
 if is_true "${START_TACTILE_SENSOR}"; then
   log_step "validating tactile simulation stream"
@@ -269,4 +285,10 @@ fi
 source "${SCRIPT_DIR}/env_ros2_vm.sh" "${DOMAIN_ID}"
 
 echo "[READY] all guards passed, launching UI..."
-python "${PROJECT_ROOT}/main_ros2.py" --control-mode ros2 --log-level INFO
+python "${PROJECT_ROOT}/main_ros2.py" \
+  --control-mode ros2 \
+  --vision-color-topic /camera/relay/color/image_raw \
+  --vision-depth-topic /camera/relay/aligned_depth_to_color/image_raw \
+  --vision-camera-info-topic /camera/relay/color/camera_info \
+  --vision-max-fps 15.0 \
+  --log-level INFO

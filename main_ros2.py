@@ -128,6 +128,8 @@ class Ros2PhaseApp:
         self.control_thread = None
         self.demo_manager = None
         self.is_running = False
+        self._error_log_last_ts = {}
+        self._error_log_interval_sec = 2.0
 
         signal.signal(signal.SIGINT, self._handle_signal)
         signal.signal(signal.SIGTERM, self._handle_signal)
@@ -166,6 +168,7 @@ class Ros2PhaseApp:
                 camera_info_topic=self.vision_camera_info_topic,
                 vision_stale_timeout_sec=self.vision_stale_timeout_sec,
                 vision_max_fps=self.vision_max_fps,
+                vision_emit_signal=False,
             )
 
             if self.control_mode == "stub":
@@ -222,13 +225,23 @@ class Ros2PhaseApp:
         self.main_window.request_shutdown.connect(self.cleanup, Qt.QueuedConnection)
 
         self.data_acquisition_thread.error_occurred.connect(
-            lambda status, info: self.logger.error("ROS2 data error [%s]: %s", status, info),
+            lambda status, info: self._log_error_throttled("data", status, info),
             Qt.QueuedConnection,
         )
         self.control_thread.error_occurred.connect(
-            lambda status, info: self.logger.error("ROS2 control error [%s]: %s", status, info),
+            lambda status, info: self._log_error_throttled("control", status, info),
             Qt.QueuedConnection,
         )
+
+    def _log_error_throttled(self, source: str, status: str, info: dict) -> None:
+        key = f"{source}:{status}"
+        from time import monotonic
+        now = monotonic()
+        last = float(self._error_log_last_ts.get(key, 0.0))
+        if now - last < self._error_log_interval_sec:
+            return
+        self._error_log_last_ts[key] = now
+        self.logger.error("ROS2 %s error [%s]: %s", source, status, info)
 
     def start(self) -> int:
         if not self.initialize_modules():

@@ -10,6 +10,7 @@ import logging
 import time
 import numpy as np
 import math
+from threading import Lock
 from datetime import datetime
 from typing import Dict, Any, Optional, List, Tuple
 import cv2
@@ -180,6 +181,13 @@ class MainWindow(QMainWindow):
         self._ros2_vision_resolution = "N/A"
         self._ros2_vision_latest_frame = None
         self._ros2_vision_device_info = "ROS2 camera stream"
+        self._ros2_vision_pending_frame = None
+        self._ros2_vision_pending_lock = Lock()
+        self._ros2_vision_frame_overwrite_count = 0
+        self._ros2_vision_last_self_check_ts = 0.0
+        self._ros2_vision_last_diag_ts = 0.0
+        self._ros2_vision_last_render_ts = 0.0
+        self._ros2_vision_render_interval_sec = 1.0 / 15.0
         self._last_arm_state = None  # 缓存机械臂状态，便于UI刷新
         self._last_missing_log_time = 0.0  # 硬件未连接告警节流时间戳
         
@@ -495,6 +503,9 @@ class MainWindow(QMainWindow):
             self._ros2_vision_connected = False
             self._ros2_vision_streaming = False
             self._ros2_vision_latest_frame = None
+            with self._ros2_vision_pending_lock:
+                self._ros2_vision_pending_frame = None
+                self._ros2_vision_frame_overwrite_count = 0
             self._stop_camera_timer()
             if self.vision_viewer:
                 self.vision_viewer.update_camera_status(
@@ -623,15 +634,59 @@ class MainWindow(QMainWindow):
     def _handle_ros2_vision_frame(self, frame):
         if frame is None:
             return
+        self._queue_ros2_vision_frame(frame)
+
+    def _queue_ros2_vision_frame(self, frame) -> None:
+        if frame is None:
+            return
+        with self._ros2_vision_pending_lock:
+            if self._ros2_vision_pending_frame is not None:
+                self._ros2_vision_frame_overwrite_count += 1
+            self._ros2_vision_pending_frame = frame
+
+    def _pull_ros2_vision_frame(self):
+        if self.data_acquisition_thread is None:
+            return None
+        if bool(getattr(self.data_acquisition_thread, "vision_emit_signal", False)):
+            return None
+        if not hasattr(self.data_acquisition_thread, "consume_latest_vision_frame"):
+            return None
+        try:
+            return self.data_acquisition_thread.consume_latest_vision_frame()
+        except Exception:
+            return None
+
+    def _process_ros2_vision_stream(self) -> None:
+        if not self._is_ros2_vision_mode():
+            return
+
+        pulled = self._pull_ros2_vision_frame()
+        if pulled is not None:
+            self._queue_ros2_vision_frame(pulled)
+
+        now = time.time()
+        if (now - self._ros2_vision_last_render_ts) < self._ros2_vision_render_interval_sec:
+            return
+
+        frame = None
+        with self._ros2_vision_pending_lock:
+            if self._ros2_vision_pending_frame is not None:
+                frame = self._ros2_vision_pending_frame
+                self._ros2_vision_pending_frame = None
+        if frame is None:
+            return
+
+        self._ros2_vision_last_render_ts = now
         self._ros2_vision_latest_frame = frame
         self._ros2_vision_connected = True
         self._ros2_vision_streaming = True
 
         self._push_camera_frame_to_viewer(frame)
-        self._refresh_self_check_status(frame)
+        if now - self._ros2_vision_last_self_check_ts >= 1.0:
+            self._refresh_self_check_status(frame)
+            self._ros2_vision_last_self_check_ts = now
 
         if self.auto_detect_enabled and not self.detect_in_progress:
-            now = time.time()
             if now - self.last_auto_detect_time >= self.auto_detect_interval:
                 self.detect_in_progress = True
                 self.last_auto_detect_time = now
@@ -648,6 +703,16 @@ class MainWindow(QMainWindow):
             self._refresh_pointcloud_viewer(frame)
         except Exception as e:
             self.logger.debug(f"ROS2点云融合失败: {e}")
+
+        if now - self._ros2_vision_last_diag_ts >= 5.0:
+            if self._ros2_vision_frame_overwrite_count > 0:
+                if hasattr(self, "logger"):
+                    self.logger.info(
+                        "ROS2 vision latest-frame overwrite count (5s): %d",
+                        self._ros2_vision_frame_overwrite_count,
+                    )
+                self._ros2_vision_frame_overwrite_count = 0
+            self._ros2_vision_last_diag_ts = now
 
     @pyqtSlot(dict)
     def _handle_ros2_vision_status(self, info: Dict[str, Any]):
@@ -2098,6 +2163,11 @@ class MainWindow(QMainWindow):
         self.force_3d_timer = QTimer()
         self.force_3d_timer.timeout.connect(self.update_3d_force_status)
         self.force_3d_timer.start(200)  # 5Hz
+
+        # ROS2视觉流处理：拉取最新帧 + 单槽位渲染，避免事件队列堆积
+        self.ros2_vision_timer = QTimer()
+        self.ros2_vision_timer.timeout.connect(self._process_ros2_vision_stream)
+        self.ros2_vision_timer.start(20)  # 50Hz pump, render is rate-limited to 15Hz
     
     def calculate_data_rate(self):
         """计算并更新数据率"""
@@ -3245,6 +3315,8 @@ class MainWindow(QMainWindow):
             self.vector_update_timer.stop()
             self.rate_timer.stop()
             self.force_3d_timer.stop()
+            if hasattr(self, "ros2_vision_timer") and self.ros2_vision_timer:
+                self.ros2_vision_timer.stop()
             
             # 接受关闭事件
             event.accept()

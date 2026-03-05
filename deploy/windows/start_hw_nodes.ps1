@@ -30,7 +30,7 @@ if (-not $ArmParamFile) {
     }
 }
 
-. (Join-Path $scriptDir "env_ros2_windows.ps1") -RosSetup $RosSetup -WorkspaceSetup $WorkspaceSetup -DomainId $DomainId
+. (Join-Path $scriptDir "env_ros2_windows.ps1") -RosSetup $RosSetup -WorkspaceSetup $WorkspaceSetup -DomainId $DomainId -WarmupRosGraph $true
 
 function Test-RosPackage {
     param([string]$PackageName)
@@ -213,7 +213,7 @@ if (-not $StartRealsense -and -not $StartArm) {
 }
 
 if ($StartRealsense) {
-    $realsenseLaunch = "& { . `"$scriptDir\\env_ros2_windows.ps1`" -RosSetup `"$RosSetup`" -DomainId $DomainId"
+    $realsenseLaunch = "& { . `"$scriptDir\\env_ros2_windows.ps1`" -RosSetup `"$RosSetup`" -DomainId $DomainId -WarmupRosGraph `$true"
     if ($WorkspaceSetup) {
         $realsenseLaunch += " -WorkspaceSetup `"$WorkspaceSetup`""
     }
@@ -222,7 +222,7 @@ if ($StartRealsense) {
 }
 
 if ($StartArm) {
-    $armLaunch = "& { . `"$scriptDir\\env_ros2_windows.ps1`" -RosSetup `"$RosSetup`" -DomainId $DomainId"
+    $armLaunch = "& { . `"$scriptDir\\env_ros2_windows.ps1`" -RosSetup `"$RosSetup`" -DomainId $DomainId -WarmupRosGraph `$true"
     if ($WorkspaceSetup) {
         $armLaunch += " -WorkspaceSetup `"$WorkspaceSetup`""
     }

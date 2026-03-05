@@ -3,7 +3,8 @@ param(
     [string]$RosSetup = "C:\\opt\\ros\\jazzy\\x64\\local_setup.ps1",
     [string]$WorkspaceSetup = "",
     [bool]$CleanConda = $true,
-    [string]$PixiOpenSslBin = ""
+    [string]$PixiOpenSslBin = "",
+    [bool]$WarmupRosGraph = $false
 )
 
 function Remove-CondaEntriesFromPath {
@@ -143,6 +144,20 @@ $env:ROS_AUTOMATIC_DISCOVERY_RANGE = "SUBNET"
 [System.Environment]::SetEnvironmentVariable("ROS_LOCALHOST_ONLY", $null, "Process")
 $env:CYCLONEDDS_URI = $ddsRuntimeFile
 
+if ($WarmupRosGraph -and (Get-Command ros2 -ErrorAction SilentlyContinue)) {
+    try {
+        & ros2 daemon stop 1>$null 2>$null
+    } catch {
+        # ignore
+    }
+    Start-Sleep -Milliseconds 200
+    try {
+        & ros2 daemon start 1>$null 2>$null
+    } catch {
+        # ignore
+    }
+}
+
 Write-Host "ROS2 Windows environment ready."
 Write-Host "ROS_DOMAIN_ID=$env:ROS_DOMAIN_ID"
 Write-Host "RMW_IMPLEMENTATION=$env:RMW_IMPLEMENTATION"
@@ -152,4 +167,7 @@ if ($CleanConda) {
 }
 if ($PixiOpenSslBin) {
     Write-Host "PIXi_OPENSSL_BIN=$PixiOpenSslBin"
+}
+if ($WarmupRosGraph) {
+    Write-Host "ROS_GRAPH_WARMUP=enabled"
 }

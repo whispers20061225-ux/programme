@@ -60,12 +60,21 @@ def generate_launch_description() -> LaunchDescription:
         parameters=[param_file],
     )
 
+    latest_frame_relay_node = Node(
+        package="tactile_vision_cpp",
+        executable="latest_frame_relay_node",
+        name="latest_frame_relay_node",
+        output="screen",
+        parameters=[param_file],
+    )
+
     return LaunchDescription(
         [
             param_file_arg,
             start_realsense_arg,
             realsense_serial_arg,
             realsense_node,
+            latest_frame_relay_node,
             realsense_monitor_node,
         ]
     )

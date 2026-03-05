@@ -118,6 +118,8 @@ class Ros2DataAcquisitionThread(QThread):
         camera_info_topic: str = "/camera/camera/color/camera_info",
         vision_stale_timeout_sec: float = 1.5,
         vision_max_fps: float = 15.0,
+        vision_emit_signal: bool = False,
+        vision_error_log_interval_sec: float = 2.0,
     ):
         super().__init__()
         self.config = config
@@ -130,6 +132,8 @@ class Ros2DataAcquisitionThread(QThread):
         self.camera_info_topic = camera_info_topic
         self.vision_stale_timeout_sec = max(0.2, float(vision_stale_timeout_sec))
         self.vision_max_fps = max(1.0, float(vision_max_fps))
+        self.vision_emit_signal = bool(vision_emit_signal)
+        self.vision_error_log_interval_sec = max(0.2, float(vision_error_log_interval_sec))
 
         self.running = False
         self.paused = False
@@ -168,6 +172,9 @@ class Ros2DataAcquisitionThread(QThread):
         self._vision_prev_status_ts = 0.0
         self._vision_fps = 0.0
         self._vision_latest_frame: Optional[Ros2CameraFrame] = None
+        self._vision_latest_frame_seq = 0
+        self._vision_consumed_frame_seq = 0
+        self._vision_error_last_emit_ts: Dict[str, float] = {}
 
     def run(self) -> None:
         if ROS2_IMPORT_ERROR is not None:
@@ -406,18 +413,19 @@ class Ros2DataAcquisitionThread(QThread):
                     self._vision_last_emit_ts = now
                     emit_frame = Ros2CameraFrame(
                         timestamp=frame_ts if frame_ts > 0 else now,
-                        color_image=self._vision_latest_color.copy(),
-                        depth_image=self._vision_latest_depth.copy() if self._vision_latest_depth is not None else None,
+                        color_image=self._vision_latest_color,
+                        depth_image=self._vision_latest_depth,
                         intrinsics=dict(self._vision_intrinsics),
                     )
                     self._vision_latest_frame = emit_frame
+                    self._vision_latest_frame_seq += 1
                     self._vision_connected = True
-            if emit_frame is not None:
+            if emit_frame is not None and self.vision_emit_signal:
                 self.vision_frame.emit(emit_frame)
             self._emit_vision_status(now=now, force=False)
         except Exception as exc:
             self.error_count += 1
-            self.error_occurred.emit("vision_color_parse_error", {"error": str(exc)})
+            self._emit_vision_error_throttled("vision_color_parse_error", exc)
 
     def ingest_vision_depth(self, msg: Any) -> None:
         if not self.vision_enabled:
@@ -437,7 +445,7 @@ class Ros2DataAcquisitionThread(QThread):
             self._emit_vision_status(now=now, force=False)
         except Exception as exc:
             self.error_count += 1
-            self.error_occurred.emit("vision_depth_parse_error", {"error": str(exc)})
+            self._emit_vision_error_throttled("vision_depth_parse_error", exc)
 
     def ingest_vision_camera_info(self, msg: Any) -> None:
         if not self.vision_enabled:
@@ -472,7 +480,26 @@ class Ros2DataAcquisitionThread(QThread):
             self._emit_vision_status(now=time.time(), force=False)
         except Exception as exc:
             self.error_count += 1
-            self.error_occurred.emit("vision_info_parse_error", {"error": str(exc)})
+            self._emit_vision_error_throttled("vision_info_parse_error", exc)
+
+    def consume_latest_vision_frame(self) -> Optional[Ros2CameraFrame]:
+        """Return newest frame once (queue size=1 semantics)."""
+        with self._vision_lock:
+            if self._vision_latest_frame is None:
+                return None
+            if self._vision_latest_frame_seq == self._vision_consumed_frame_seq:
+                return None
+            self._vision_consumed_frame_seq = self._vision_latest_frame_seq
+            frame = self._vision_latest_frame
+        return frame
+
+    def _emit_vision_error_throttled(self, key: str, exc: Exception) -> None:
+        now = time.time()
+        last = float(self._vision_error_last_emit_ts.get(key, 0.0))
+        if now - last < self.vision_error_log_interval_sec:
+            return
+        self._vision_error_last_emit_ts[key] = now
+        self.error_occurred.emit(key, {"error": str(exc)})
 
     @staticmethod
     def _normalize_color_image(image: np.ndarray, encoding: str) -> Optional[np.ndarray]:

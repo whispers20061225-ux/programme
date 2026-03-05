@@ -1,10 +1,22 @@
+latest_frame_relay_node:
+  ros__parameters:
+    input_color_topic: "/camera/camera/color/image_raw"
+    input_depth_topic: "/camera/camera/aligned_depth_to_color/image_raw"
+    input_camera_info_topic: "/camera/camera/color/camera_info"
+    output_color_topic: "/camera/relay/color/image_raw"
+    output_depth_topic: "/camera/relay/aligned_depth_to_color/image_raw"
+    output_camera_info_topic: "/camera/relay/color/camera_info"
+    publish_rate_hz: 15.0
+    stale_timeout_sec: 2.0
+    require_depth_stream: false
+    log_interval_sec: 15.0
+
 realsense_monitor_node:
   ros__parameters:
-    color_topic: "/camera/camera/color/image_raw"
-    depth_topic: "/camera/camera/aligned_depth_to_color/image_raw"
-    camera_info_topic: "/camera/camera/color/camera_info"
+    color_topic: "/camera/relay/color/image_raw"
+    depth_topic: "/camera/relay/aligned_depth_to_color/image_raw"
+    camera_info_topic: "/camera/relay/color/camera_info"
     health_topic: "/system/health"
     status_rate_hz: 1.0
     stale_timeout_sec: 1.5
     require_depth_stream: false
-

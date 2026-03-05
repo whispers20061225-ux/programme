@@ -6,6 +6,31 @@ All notable project updates are recorded in this file.
 
 - Next planned step:
   - Phase 6.2 Gazebo + MoveIt2 + SmolVLA shadow-policy integration.
+- Split-stream stability optimization (Windows + VM):
+  - Added C++ latest-frame relay package:
+    - `ros2_ws/src/tactile_vision_cpp`
+    - node: `latest_frame_relay_node`
+  - Wired relay node into launch/config:
+    - `split_vm_app.launch.py` / `split_vm_app.yaml`
+    - `phase6_vision.launch.py` / `phase6_vision.yaml`
+  - UI path now consumes relay topics:
+    - `/camera/relay/color/image_raw`
+    - `/camera/relay/aligned_depth_to_color/image_raw`
+    - `/camera/relay/color/camera_info`
+  - `Ros2DataAcquisitionThread` now supports queue-size-1 frame consumption:
+    - added `consume_latest_vision_frame()`
+    - vision frame signal push can be disabled (`vision_emit_signal=False`)
+    - vision parse errors are rate-limited.
+  - `MainWindow` ROS2 vision path switched to pull+latest-frame rendering:
+    - single-slot pending frame overwrite
+    - fixed-rate render pump (15Hz target)
+    - reduced Qt event queue buildup under long runs.
+  - Windows startup warmup hardening:
+    - `env_ros2_windows.ps1` supports ROS graph warmup (`ros2 daemon stop/start`)
+    - `start_realsense_ready.ps1`, `start_hw_nodes.ps1`, `realsense_watchdog.ps1` enabled warmup by default.
+  - VM one-click startup hardening:
+    - stale process cleanup before launch
+    - relay topic availability guard before UI start.
 - Windows + VM split deployment kickoff (Phase A):
   - Added CycloneDDS peer-mode templates:
     - `config/dds/cyclonedds_windows.xml`

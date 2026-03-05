@@ -133,7 +133,7 @@ function Stop-RealsenseNodeProcess {
 }
 
 Write-Step "loading ROS2 Windows environment"
-. (Join-Path $scriptDir "env_ros2_windows.ps1") -RosSetup $RosSetup -WorkspaceSetup $WorkspaceSetup -DomainId $DomainId
+. (Join-Path $scriptDir "env_ros2_windows.ps1") -RosSetup $RosSetup -WorkspaceSetup $WorkspaceSetup -DomainId $DomainId -WarmupRosGraph $true
 
 if (-not (Get-Command ros2 -ErrorAction SilentlyContinue)) {
     Write-Fail "ros2 command unavailable after environment setup"

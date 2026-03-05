@@ -129,6 +129,24 @@ Parameters:
 - `3.0`: minimum acceptable color fps
 - `3.0`: minimum acceptable depth fps
 
+## VM Build Requirement (C++ Relay)
+
+`split_vm_app.launch.py` now includes a C++ latest-frame relay node (`tactile_vision_cpp/latest_frame_relay_node`).
+Before running VM one-click UI script, build VM workspace at least once:
+
+```bash
+cd /home/zhuyiwei/programme/programme/ros2_ws
+source /opt/ros/jazzy/setup.bash
+colcon build --symlink-install --packages-select tactile_interfaces tactile_vision tactile_vision_cpp tactile_bringup
+source install/setup.bash
+```
+
+Relay topics used by UI path:
+
+- `/camera/relay/color/image_raw`
+- `/camera/relay/aligned_depth_to_color/image_raw`
+- `/camera/relay/color/camera_info`
+
 ## Simultaneous Windows-vs-VM Hz Compare
 
 Use this to compare Windows local publish rate and VM receive rate at the same moment.
