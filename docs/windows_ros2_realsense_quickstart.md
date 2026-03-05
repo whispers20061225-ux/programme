@@ -114,3 +114,38 @@ Parameters:
 - `12`: hz sampling duration (seconds)
 - `3.0`: minimum acceptable color fps
 - `3.0`: minimum acceptable depth fps
+
+## Simultaneous Windows-vs-VM Hz Compare
+
+Use this to compare Windows local publish rate and VM receive rate at the same moment.
+
+1. On Windows, create a shared start epoch (UTC seconds):
+
+```powershell
+$START_EPOCH = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds() + 15
+$START_EPOCH
+```
+
+2. On Windows (publisher side):
+
+```powershell
+cd $PROJECT_ROOT
+. .\deploy\windows\sample_realsense_hz.ps1 -RosSetup "C:\pixi_ws\ros2-windows\ros2-windows\local_setup.bat" -WorkspaceSetup ".\ros2_ws\install\local_setup.ps1" -DomainId 0 -SampleSec 12 -StartEpochSec $START_EPOCH
+```
+
+3. On VM (receiver side), use the same `START_EPOCH` number:
+
+```bash
+cd /home/zhuyiwei/programme/programme
+bash deploy/vm/sample_realsense_hz.sh 0 12 <START_EPOCH>
+```
+
+Expected output format:
+
+- Windows: `[RESULT][windows] ... color_hz=... depth_hz=...`
+- VM: `[RESULT][vm] ... color_hz=... depth_hz=...`
+
+Interpretation:
+
+- If Windows high + VM low: cross-machine DDS/network path is the bottleneck.
+- If both low: Windows publisher/camera pipeline is the bottleneck.
