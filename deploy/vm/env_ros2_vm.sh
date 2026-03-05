@@ -35,9 +35,26 @@ if [[ -f "${WS_SETUP}" ]]; then
   source_setup_compat "${WS_SETUP}"
 fi
 
+require_cyclonedds_rmw() {
+  if [[ -f "/opt/ros/jazzy/lib/librmw_cyclonedds_cpp.so" ]]; then
+    return 0
+  fi
+  if ldconfig -p 2>/dev/null | grep -q "librmw_cyclonedds_cpp.so"; then
+    return 0
+  fi
+
+  echo "[ERROR] RMW implementation 'rmw_cyclonedds_cpp' is not installed on this VM." >&2
+  echo "[ERROR] Install it with:" >&2
+  echo "        sudo apt update && sudo apt install -y ros-jazzy-rmw-cyclonedds-cpp" >&2
+  return 1
+}
+
+require_cyclonedds_rmw
+
 export ROS_DOMAIN_ID="${DOMAIN_ID}"
 export RMW_IMPLEMENTATION="rmw_cyclonedds_cpp"
-export ROS_LOCALHOST_ONLY="0"
+export ROS_AUTOMATIC_DISCOVERY_RANGE="SUBNET"
+unset ROS_LOCALHOST_ONLY || true
 export CYCLONEDDS_URI="file://${PROJECT_ROOT}/config/dds/cyclonedds_vm.xml"
 
 echo "ROS2 VM environment ready."
