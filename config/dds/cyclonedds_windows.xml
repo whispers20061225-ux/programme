@@ -12,6 +12,8 @@
     <Discovery>
       <ParticipantIndex>auto</ParticipantIndex>
       <Peers>
+        <!-- Windows host-only adapter -->
+        <Peer Address="192.168.147.1" />
         <!-- Replace address with your VM host-only IPv4 -->
         <Peer Address="192.168.147.128" />
       </Peers>
