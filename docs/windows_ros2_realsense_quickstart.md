@@ -48,6 +48,20 @@ Expected result:
 - Node startup log shows:
   - `realsense_camera_node started: serial=auto ...`
 
+Note:
+
+- Current default uses `realsense_watchdog.ps1` under the hood.
+- Watchdog automatically restarts RealSense node when consecutive sampling windows are below threshold.
+
+## Optional: Run watchdog directly in foreground
+
+```powershell
+cd $PROJECT_ROOT
+. .\deploy\windows\realsense_watchdog.ps1 -RosSetup "C:\pixi_ws\ros2-windows\ros2-windows\local_setup.bat" -WorkspaceSetup ".\ros2_ws\install\local_setup.ps1" -DomainId 0 -CheckIntervalSec 20 -HzSampleSec 8 -MinColorHz 3.0 -MinDepthHz 3.0
+```
+
+This is the recommended long-running mode during VM + UI debugging.
+
 ## Terminal 3: Verify topics on Windows
 
 ```powershell

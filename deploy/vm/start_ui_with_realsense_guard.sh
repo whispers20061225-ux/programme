@@ -203,8 +203,8 @@ log_ok "VM core nodes are online"
 
 if is_true "${START_TACTILE_SENSOR}"; then
   log_step "validating tactile simulation stream"
-  if ! wait_for_message "/tactile/raw" 20; then
-    log_fail "no tactile message received on /tactile/raw."
+  if ! wait_for_topic "/tactile/raw" 20; then
+    log_fail "topic /tactile/raw is missing."
     log_fail "Check tactile sensor config/runtime in split_vm_app.launch.py"
     dump_runtime_diagnostics
     exit 1
@@ -212,6 +212,14 @@ if is_true "${START_TACTILE_SENSOR}"; then
   tactile_hz="$(sample_hz "/tactile/raw" 8 || true)"
   if [[ -z "${tactile_hz}" ]]; then
     tactile_hz="$(sample_hz "tactile/raw" 8 || true)"
+  fi
+  if [[ -z "${tactile_hz}" ]]; then
+    sleep 2
+    tactile_hz="$(sample_hz "/tactile/raw" 8 || true)"
+  fi
+  if [[ -z "${tactile_hz}" ]]; then
+    sleep 2
+    tactile_hz="$(sample_hz "/tactile/raw" 8 || true)"
   fi
   if [[ -z "${tactile_hz}" ]]; then
     log_fail "unable to measure tactile hz on /tactile/raw"

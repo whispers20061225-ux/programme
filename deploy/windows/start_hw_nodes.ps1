@@ -4,6 +4,7 @@ param(
     [int]$DomainId = 0,
     [string]$ArmParamFile = "",
     [string]$RealsenseSerial = "",
+    [switch]$UseRealsenseWatchdog = $true,
     [switch]$StartArm = $true,
     [switch]$StartRealsense = $true,
     [switch]$Foreground = $false,
@@ -82,6 +83,7 @@ function Test-PythonModule {
 
 $realsenseCmd = ""
 $realsenseMode = ""
+$realsenseLaunchCmd = ""
 
 $armCmd = ""
 if ($ArmParamFile) {
@@ -150,10 +152,31 @@ if ($StartArm -and -not $hasArmPkg) {
     $StartArm = $false
 }
 
+if ($StartRealsense) {
+    if ($UseRealsenseWatchdog) {
+        $realsenseLaunchCmd = "& `"$scriptDir\\realsense_watchdog.ps1`" -RosSetup `"$RosSetup`" -DomainId $DomainId"
+        if ($WorkspaceSetup) {
+            $realsenseLaunchCmd += " -WorkspaceSetup `"$WorkspaceSetup`""
+        }
+        if ($RealsenseSerial) {
+            $realsenseLaunchCmd += " -RealsenseSerial `"$RealsenseSerial`""
+        }
+        if ($realsenseMode -eq "realsense2_camera") {
+            $realsenseLaunchCmd += " -UseRealsense2Camera"
+        }
+    } else {
+        $realsenseLaunchCmd = $realsenseCmd
+    }
+}
+
 Write-Host ""
 Write-Host "Windows hardware node commands:"
 if ($StartRealsense) {
-    Write-Host "  [RealSense][$realsenseMode] $realsenseCmd"
+    if ($UseRealsenseWatchdog) {
+        Write-Host "  [RealSense][$realsenseMode+watchdog] $realsenseLaunchCmd"
+    } else {
+        Write-Host "  [RealSense][$realsenseMode] $realsenseCmd"
+    }
 }
 if ($StartArm) {
     Write-Host "  [Arm]       $armCmd"
@@ -162,8 +185,12 @@ Write-Host ""
 
 if ($Foreground) {
     if ($StartRealsense -and -not $StartArm) {
-        Write-Host "Foreground mode: running RealSense node in current terminal."
-        Invoke-Expression $realsenseCmd
+        if ($UseRealsenseWatchdog) {
+            Write-Host "Foreground mode: running RealSense watchdog in current terminal."
+        } else {
+            Write-Host "Foreground mode: running RealSense node in current terminal."
+        }
+        Invoke-Expression $realsenseLaunchCmd
         exit $LASTEXITCODE
     }
     if ($StartArm -and -not $StartRealsense) {
@@ -190,7 +217,7 @@ if ($StartRealsense) {
     if ($WorkspaceSetup) {
         $realsenseLaunch += " -WorkspaceSetup `"$WorkspaceSetup`""
     }
-    $realsenseLaunch += "; $realsenseCmd }"
+    $realsenseLaunch += "; $realsenseLaunchCmd }"
     Start-Process $shellExe -ArgumentList "-NoExit", "-Command", $realsenseLaunch
 }
 

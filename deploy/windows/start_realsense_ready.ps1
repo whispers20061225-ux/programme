@@ -91,6 +91,7 @@ function Get-TopicAverageHz {
 
 function Stop-RealsenseProcesses {
     $patterns = @(
+        "realsense_watchdog.ps1",
         "realsense_camera_node",
         "realsense2_camera_node",
         "realsense2_camera"
