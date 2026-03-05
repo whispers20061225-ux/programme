@@ -158,26 +158,27 @@ function Invoke-StartRealsenseOnly {
     $scriptPath = Join-Path $scriptDir "start_realsense_only.ps1"
     $outFile = Join-Path $env:TEMP ("programme_rs_launch_" + [guid]::NewGuid().ToString() + ".out.log")
     $errFile = Join-Path $env:TEMP ("programme_rs_launch_" + [guid]::NewGuid().ToString() + ".err.log")
+    $quotedScriptPath = "'" + ($scriptPath -replace "'", "''") + "'"
+    $quotedRosSetupPath = "'" + ($RosSetupPath -replace "'", "''") + "'"
+    $warmupToken = if ($WarmupGraph) { '$true' } else { '$false' }
+    $launchCommand = "& { & $quotedScriptPath -RosSetup $quotedRosSetupPath -DomainId $RosDomainId -WarmupRosGraph $warmupToken -Execute"
+    if ($WorkspaceSetupPath) {
+        $quotedWorkspaceSetupPath = "'" + ($WorkspaceSetupPath -replace "'", "''") + "'"
+        $launchCommand += " -WorkspaceSetup $quotedWorkspaceSetupPath"
+    }
+    if ($SerialNo) {
+        $quotedSerialNo = "'" + ($SerialNo -replace "'", "''") + "'"
+        $launchCommand += " -RealsenseSerial $quotedSerialNo"
+    }
+    $launchCommand += " }"
     $argList = @(
         "-NoLogo",
         "-NoProfile",
         "-ExecutionPolicy",
         "Bypass",
-        "-File",
-        $scriptPath,
-        "-RosSetup",
-        $RosSetupPath,
-        "-DomainId",
-        $RosDomainId.ToString(),
-        ("-WarmupRosGraph:$($WarmupGraph.ToString().ToLowerInvariant())"),
-        "-Execute"
+        "-Command",
+        $launchCommand
     )
-    if ($WorkspaceSetupPath) {
-        $argList += @("-WorkspaceSetup", $WorkspaceSetupPath)
-    }
-    if ($SerialNo) {
-        $argList += @("-RealsenseSerial", $SerialNo)
-    }
 
     try {
         $proc = Start-Process -FilePath $shellExe -ArgumentList $argList -PassThru -RedirectStandardOutput $outFile -RedirectStandardError $errFile -WindowStyle Hidden
