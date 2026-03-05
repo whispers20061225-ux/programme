@@ -139,7 +139,8 @@ Import-SetupScript -SetupPath $WorkspaceSetup -Label "Workspace setup"
 
 $env:ROS_DOMAIN_ID = "$DomainId"
 $env:RMW_IMPLEMENTATION = "rmw_cyclonedds_cpp"
-$env:ROS_LOCALHOST_ONLY = "0"
+$env:ROS_AUTOMATIC_DISCOVERY_RANGE = "SUBNET"
+[System.Environment]::SetEnvironmentVariable("ROS_LOCALHOST_ONLY", $null, "Process")
 $env:CYCLONEDDS_URI = $ddsRuntimeFile
 
 Write-Host "ROS2 Windows environment ready."

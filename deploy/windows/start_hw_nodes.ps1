@@ -36,6 +36,15 @@ function Test-RosPackage {
     return ($LASTEXITCODE -eq 0)
 }
 
+function Test-PythonModule {
+    param([string]$ModuleName)
+    if (-not (Get-Command python -ErrorAction SilentlyContinue)) {
+        return $false
+    }
+    python -c "import $ModuleName" 2>$null | Out-Null
+    return ($LASTEXITCODE -eq 0)
+}
+
 $realsenseCmd = ""
 $realsenseMode = ""
 
@@ -63,6 +72,12 @@ if ($StartRealsense) {
             "-p depth_module.profile:=640x480x15"
         ) -join " "
     } elseif ($hasRealsenseFallbackPkg) {
+        if (-not (Test-PythonModule -ModuleName "pyrealsense2")) {
+            Write-Warning "Fallback node requires python module 'pyrealsense2', but it is missing."
+            Write-Warning "Install hint: python -m pip install --upgrade pip setuptools wheel"
+            Write-Warning "Install hint: python -m pip install pyrealsense2"
+            $StartRealsense = $false
+        } else {
         $realsenseMode = "tactile_vision.realsense_camera_node"
         $realsenseCmd = @(
             "ros2 run tactile_vision realsense_camera_node --ros-args",
@@ -78,6 +93,7 @@ if ($StartRealsense) {
             "-p depth_fps:=15"
         ) -join " "
         Write-Warning "Package 'realsense2_camera' not found. Falling back to tactile_vision/realsense_camera_node."
+        }
     } else {
         Write-Warning "No RealSense publisher package found. Build ros2_ws (including tactile_vision) on Windows first."
         Write-Warning "Hint: cd ros2_ws; colcon build --merge-install --symlink-install --packages-select tactile_interfaces tactile_vision tactile_bringup"
