@@ -42,6 +42,9 @@ What it does:
 
 - validates Windows->VM RealSense link using `deploy/vm/test_realsense_stream.sh`
 - starts `split_vm_app.launch.py` in background
+- validates VM-side core nodes (`arm_control_node`, `demo_task_node`, `tactile_ui_subscriber`, `realsense_monitor_node`)
+- validates tactile simulation stream when enabled (`/tactile/raw`)
+- validates arm chain when enabled (`/arm/state`, `/arm/*`, `/control/arm/*`)
 - starts `main_ros2.py --control-mode ros2`
 - when UI exits, it stops launch process by default
 
@@ -49,7 +52,7 @@ Command (VM terminal):
 
 ```bash
 cd /home/zhuyiwei/programme/programme
-bash deploy/vm/start_ui_with_realsense_guard.sh 0 20 12 3.0 3.0 true dayiprogramme312
+bash deploy/vm/start_ui_with_realsense_guard.sh 0 20 12 3.0 3.0 true dayiprogramme312 20 3.0 true
 ```
 
 Parameters:
@@ -61,6 +64,9 @@ Parameters:
 - `3.0`: minimum depth fps
 - `true`: `start_tactile_sensor` argument for VM launch
 - `dayiprogramme312`: conda environment name for UI
+- `20`: arm chain wait timeout seconds
+- `3.0`: minimum tactile fps
+- `true`: whether arm chain is required (`false` to skip arm guard)
 
 Optional:
 
@@ -68,6 +74,12 @@ Optional:
 
 ```bash
 KEEP_LAUNCH=true bash deploy/vm/start_ui_with_realsense_guard.sh 0 20 12 3.0 3.0 true dayiprogramme312
+```
+
+Skip arm guard (camera + tactile only):
+
+```bash
+bash deploy/vm/start_ui_with_realsense_guard.sh 0 20 12 3.0 3.0 true dayiprogramme312 20 3.0 false
 ```
 
 ## Troubleshooting
@@ -78,4 +90,3 @@ KEEP_LAUNCH=true bash deploy/vm/start_ui_with_realsense_guard.sh 0 20 12 3.0 3.0
    - `python -m pip install pyrealsense2`
 3. Windows build reports missing `pkg_resources`:
    - `python -m pip install "setuptools<81"`
-
