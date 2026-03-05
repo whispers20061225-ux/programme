@@ -3,7 +3,8 @@ param(
     [string]$WorkspaceSetup = "",
     [int]$DomainId = 0,
     [int]$SampleSec = 12,
-    [long]$StartEpochSec = 0
+    [long]$StartEpochSec = 0,
+    [int]$TopicTimeoutSec = 20
 )
 
 $ErrorActionPreference = "Stop"
@@ -21,6 +22,22 @@ function Wait-UntilEpoch {
     while ((Get-NowEpochSec) -lt $TargetEpoch) {
         Start-Sleep -Milliseconds 200
     }
+}
+
+function Wait-Topic {
+    param(
+        [string]$TopicName,
+        [int]$TimeoutSec
+    )
+    $deadline = (Get-Date).AddSeconds($TimeoutSec)
+    while ((Get-Date) -lt $deadline) {
+        $topics = & ros2 topic list 2>$null
+        if ($LASTEXITCODE -eq 0 -and ($topics -contains $TopicName)) {
+            return $true
+        }
+        Start-Sleep -Seconds 1
+    }
+    return $false
 }
 
 function Get-TopicAverageHz {
@@ -57,6 +74,19 @@ function Get-TopicAverageHz {
 
 $colorTopic = "/camera/camera/color/image_raw"
 $depthTopic = "/camera/camera/aligned_depth_to_color/image_raw"
+
+if (-not (Wait-Topic -TopicName $colorTopic -TimeoutSec $TopicTimeoutSec)) {
+    Write-Host "[DIAG] discovered topics:" -ForegroundColor Yellow
+    & ros2 topic list
+    Write-Error "color topic not found within ${TopicTimeoutSec}s: $colorTopic"
+    exit 1
+}
+if (-not (Wait-Topic -TopicName $depthTopic -TimeoutSec $TopicTimeoutSec)) {
+    Write-Host "[DIAG] discovered topics:" -ForegroundColor Yellow
+    & ros2 topic list
+    Write-Error "depth topic not found within ${TopicTimeoutSec}s: $depthTopic"
+    exit 1
+}
 
 Wait-UntilEpoch -TargetEpoch $StartEpochSec
 $startEpoch = Get-NowEpochSec

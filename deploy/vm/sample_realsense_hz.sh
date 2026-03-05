@@ -4,6 +4,7 @@ set -euo pipefail
 DOMAIN_ID="${1:-0}"
 SAMPLE_SEC="${2:-12}"
 START_EPOCH_SEC="${3:-0}"
+TOPIC_TIMEOUT_SEC="${4:-20}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck disable=SC1091
@@ -22,6 +23,20 @@ wait_until_epoch() {
   done
 }
 
+wait_for_topic() {
+  local topic="$1"
+  local timeout_sec="$2"
+  local elapsed=0
+  while (( elapsed < timeout_sec )); do
+    if ros2 topic list 2>/dev/null | grep -Fxq "${topic}"; then
+      return 0
+    fi
+    sleep 1
+    elapsed=$((elapsed + 1))
+  done
+  return 1
+}
+
 sample_hz() {
   local topic="$1"
   local window="$2"
@@ -36,6 +51,19 @@ sample_hz() {
   fi
   echo "${output}" | awk '/average rate/ {print $3}' | tail -n 1
 }
+
+if ! wait_for_topic "${COLOR_TOPIC}" "${TOPIC_TIMEOUT_SEC}"; then
+  echo "[FAIL] color topic not found within ${TOPIC_TIMEOUT_SEC}s: ${COLOR_TOPIC}" >&2
+  echo "[DIAG] discovered topics:" >&2
+  ros2 topic list 2>/dev/null >&2 || true
+  exit 1
+fi
+if ! wait_for_topic "${DEPTH_TOPIC}" "${TOPIC_TIMEOUT_SEC}"; then
+  echo "[FAIL] depth topic not found within ${TOPIC_TIMEOUT_SEC}s: ${DEPTH_TOPIC}" >&2
+  echo "[DIAG] discovered topics:" >&2
+  ros2 topic list 2>/dev/null >&2 || true
+  exit 1
+fi
 
 wait_until_epoch "${START_EPOCH_SEC}"
 start_epoch="$(date +%s)"

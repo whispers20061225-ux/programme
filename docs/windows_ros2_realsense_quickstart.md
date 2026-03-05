@@ -118,6 +118,7 @@ Parameters:
 ## Simultaneous Windows-vs-VM Hz Compare
 
 Use this to compare Windows local publish rate and VM receive rate at the same moment.
+Keep the Windows RealSense publisher terminal running during the whole test.
 
 1. On Windows, create a shared start epoch (UTC seconds):
 
@@ -137,7 +138,8 @@ cd $PROJECT_ROOT
 
 ```bash
 cd /home/zhuyiwei/programme/programme
-bash deploy/vm/sample_realsense_hz.sh 0 12 <START_EPOCH>
+START_EPOCH=1700000000   # replace with the number printed on Windows
+bash deploy/vm/sample_realsense_hz.sh 0 12 "${START_EPOCH}" 20
 ```
 
 Expected output format:
