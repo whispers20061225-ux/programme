@@ -18,10 +18,25 @@ PROJECT_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 LAUNCH_LOG_DIR="${PROJECT_ROOT}/ros2_ws/log"
 LAUNCH_LOG_FILE="${LAUNCH_LOG_DIR}/split_vm_app_$(date +%Y%m%d_%H%M%S).log"
 
+USE_RELAY_TOPICS="true"
+VISION_COLOR_TOPIC="/camera/relay/color/image_raw"
+VISION_DEPTH_TOPIC="/camera/relay/aligned_depth_to_color/image_raw"
+VISION_CAMERA_INFO_TOPIC="/camera/relay/color/camera_info"
+PARAM_FILE_PATH=""
+
 log_step() { echo "[STEP] $*"; }
 log_ok() { echo "[OK] $*"; }
 log_fail() { echo "[FAIL] $*" >&2; }
 is_true() { [[ "${1,,}" == "true" || "${1}" == "1" || "${1,,}" == "yes" ]]; }
+
+has_ros_package() {
+  local package_name="$1"
+  set +e
+  ros2 pkg prefix "${package_name}" >/dev/null 2>&1
+  local rc=$?
+  set -e
+  return ${rc}
+}
 
 wait_for_topic() {
   local topic="$1"
@@ -158,6 +173,9 @@ cleanup() {
       kill "${LAUNCH_PID}" 2>/dev/null || true
     fi
   fi
+  if [[ -n "${PARAM_FILE_PATH:-}" && -f "${PARAM_FILE_PATH}" && "${PARAM_FILE_PATH}" == /tmp/* ]]; then
+    rm -f "${PARAM_FILE_PATH}" || true
+  fi
 }
 trap cleanup EXIT INT TERM
 
@@ -179,6 +197,26 @@ source "${SCRIPT_DIR}/env_ros2_vm.sh" "${DOMAIN_ID}"
 ros2 daemon stop >/dev/null 2>&1 || true
 ros2 daemon start >/dev/null 2>&1 || true
 
+if ! has_ros_package "tactile_vision_cpp"; then
+  USE_RELAY_TOPICS="false"
+  VISION_COLOR_TOPIC="/camera/camera/color/image_raw"
+  VISION_DEPTH_TOPIC="/camera/camera/aligned_depth_to_color/image_raw"
+  VISION_CAMERA_INFO_TOPIC="/camera/camera/color/camera_info"
+
+  PARAM_FILE_PATH="$(mktemp)"
+  cp "${PROJECT_ROOT}/ros2_ws/src/tactile_bringup/config/split_vm_app.yaml" "${PARAM_FILE_PATH}"
+  sed -i \
+    -e "s#/camera/relay/color/image_raw#${VISION_COLOR_TOPIC}#g" \
+    -e "s#/camera/relay/aligned_depth_to_color/image_raw#${VISION_DEPTH_TOPIC}#g" \
+    -e "s#/camera/relay/color/camera_info#${VISION_CAMERA_INFO_TOPIC}#g" \
+    "${PARAM_FILE_PATH}"
+
+  echo "[WARN] package tactile_vision_cpp not found on VM; starting without latest_frame_relay_node."
+  echo "[WARN] fallback UI topics: color=${VISION_COLOR_TOPIC} depth=${VISION_DEPTH_TOPIC} info=${VISION_CAMERA_INFO_TOPIC}"
+else
+  log_ok "tactile_vision_cpp detected; using relay topics for UI path"
+fi
+
 log_step "cleaning stale VM ROS2 processes"
 pkill -f "split_vm_app.launch.py" >/dev/null 2>&1 || true
 pkill -f "latest_frame_relay_node" >/dev/null 2>&1 || true
@@ -186,7 +224,16 @@ sleep 1
 
 mkdir -p "${LAUNCH_LOG_DIR}"
 log_step "starting split_vm_app.launch.py in background"
-ros2 launch tactile_bringup split_vm_app.launch.py start_tactile_sensor:="${START_TACTILE_SENSOR}" >"${LAUNCH_LOG_FILE}" 2>&1 &
+launch_args=("start_tactile_sensor:=${START_TACTILE_SENSOR}")
+if [[ "${USE_RELAY_TOPICS}" == "true" ]]; then
+  launch_args+=("start_latest_frame_relay:=true")
+else
+  launch_args+=("start_latest_frame_relay:=false")
+fi
+if [[ -n "${PARAM_FILE_PATH}" ]]; then
+  launch_args+=("param_file:=${PARAM_FILE_PATH}")
+fi
+ros2 launch tactile_bringup split_vm_app.launch.py "${launch_args[@]}" >"${LAUNCH_LOG_FILE}" 2>&1 &
 LAUNCH_PID="$!"
 sleep 4
 if ! kill -0 "${LAUNCH_PID}" 2>/dev/null; then
@@ -198,7 +245,11 @@ log_ok "split_vm_app.launch.py running (pid=${LAUNCH_PID})"
 echo "[INFO] launch log: ${LAUNCH_LOG_FILE}"
 
 log_step "validating VM-side core nodes"
-for node in "/arm_control_node" "/demo_task_node" "/tactile_ui_subscriber" "/latest_frame_relay_node" "/realsense_monitor_node"; do
+core_nodes=("/arm_control_node" "/demo_task_node" "/tactile_ui_subscriber" "/realsense_monitor_node")
+if [[ "${USE_RELAY_TOPICS}" == "true" ]]; then
+  core_nodes+=("/latest_frame_relay_node")
+fi
+for node in "${core_nodes[@]}"; do
   if ! wait_for_node "${node}" 15; then
     log_fail "required VM node missing: ${node}"
     log_fail "Check launch log: ${LAUNCH_LOG_FILE}"
@@ -214,16 +265,24 @@ if is_true "${START_TACTILE_SENSOR}"; then
 fi
 log_ok "VM core nodes are online"
 
-log_step "validating relay camera topics for UI path"
-for topic in "/camera/relay/color/image_raw" "/camera/relay/aligned_depth_to_color/image_raw" "/camera/relay/color/camera_info"; do
+if [[ "${USE_RELAY_TOPICS}" == "true" ]]; then
+  log_step "validating relay camera topics for UI path"
+else
+  log_step "validating raw camera topics for UI path (relay disabled)"
+fi
+for topic in "${VISION_COLOR_TOPIC}" "${VISION_DEPTH_TOPIC}" "${VISION_CAMERA_INFO_TOPIC}"; do
   if ! wait_for_topic "${topic}" 15; then
-    log_fail "required relay topic missing: ${topic}"
-    log_fail "Check latest_frame_relay_node and split_vm_app.yaml topic mapping."
+    log_fail "required vision topic missing: ${topic}"
+    if [[ "${USE_RELAY_TOPICS}" == "true" ]]; then
+      log_fail "Check latest_frame_relay_node and split_vm_app.yaml topic mapping."
+    else
+      log_fail "Check Windows camera publisher and DDS connectivity."
+    fi
     dump_runtime_diagnostics
     exit 1
   fi
 done
-log_ok "relay camera topics are online"
+log_ok "vision topics for UI path are online"
 
 if is_true "${START_TACTILE_SENSOR}"; then
   log_step "validating tactile simulation stream"
@@ -263,7 +322,7 @@ if is_true "${ARM_REQUIRED}"; then
   if ! wait_for_topic "/arm/state" "${ARM_TIMEOUT_SEC}"; then
     log_fail "topic /arm/state not available within ${ARM_TIMEOUT_SEC}s"
     log_fail "Windows side likely started camera only. Start arm driver on Windows:"
-    log_fail ".\\deploy\\windows\\start_hw_nodes.ps1 -RosSetup <ros_setup> -DomainId ${DOMAIN_ID} -StartArm:\$true -StartRealsense:\$true -Execute"
+    log_fail "C:\\Users\\whisp\\Desktop\\dayi\\programme\\deploy\\windows\\start_hw_nodes.ps1 -RosSetup <ros_setup> -DomainId ${DOMAIN_ID} -StartArm:\$true -StartRealsense:\$true -Execute"
     exit 1
   fi
   for svc in "/arm/enable" "/arm/home" "/arm/move_joint" "/arm/move_joints" "/control/arm/enable" "/control/arm/move_joint"; do
@@ -295,8 +354,8 @@ source "${SCRIPT_DIR}/env_ros2_vm.sh" "${DOMAIN_ID}"
 echo "[READY] all guards passed, launching UI..."
 python "${PROJECT_ROOT}/main_ros2.py" \
   --control-mode ros2 \
-  --vision-color-topic /camera/relay/color/image_raw \
-  --vision-depth-topic /camera/relay/aligned_depth_to_color/image_raw \
-  --vision-camera-info-topic /camera/relay/color/camera_info \
+  --vision-color-topic "${VISION_COLOR_TOPIC}" \
+  --vision-depth-topic "${VISION_DEPTH_TOPIC}" \
+  --vision-camera-info-topic "${VISION_CAMERA_INFO_TOPIC}" \
   --vision-max-fps 15.0 \
   --log-level INFO

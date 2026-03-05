@@ -21,9 +21,15 @@ def generate_launch_description() -> LaunchDescription:
         default_value="true",
         description="Whether to launch tactile_sensor_node on VM side",
     )
+    start_latest_frame_relay_arg = DeclareLaunchArgument(
+        "start_latest_frame_relay",
+        default_value="true",
+        description="Whether to launch tactile_vision_cpp latest_frame_relay_node",
+    )
 
     param_file = LaunchConfiguration("param_file")
     start_tactile_sensor = LaunchConfiguration("start_tactile_sensor")
+    start_latest_frame_relay = LaunchConfiguration("start_latest_frame_relay")
 
     tactile_sensor_node = Node(
         package="tactile_hardware",
@@ -64,6 +70,7 @@ def generate_launch_description() -> LaunchDescription:
         name="latest_frame_relay_node",
         output="screen",
         parameters=[param_file],
+        condition=IfCondition(start_latest_frame_relay),
     )
 
     realsense_monitor_node = Node(
@@ -78,6 +85,7 @@ def generate_launch_description() -> LaunchDescription:
         [
             param_file_arg,
             start_tactile_sensor_arg,
+            start_latest_frame_relay_arg,
             tactile_sensor_node,
             arm_control_node,
             demo_task_node,
