@@ -28,40 +28,102 @@ function Write-Ok([string]$msg) { Write-Host "[OK] $msg" -ForegroundColor Green 
 function Write-WarnMsg([string]$msg) { Write-Host "[WARN] $msg" -ForegroundColor Yellow }
 function Write-Fail([string]$msg) { Write-Host "[FAIL] $msg" -ForegroundColor Red }
 
+function Get-PreferredShell {
+    if (Get-Command pwsh -ErrorAction SilentlyContinue) {
+        return "pwsh"
+    }
+    return "powershell"
+}
+
+function Read-TextSafe {
+    param([string]$Path)
+
+    if (-not (Test-Path $Path)) {
+        return ""
+    }
+    $contentObj = Get-Content -Raw -Path $Path -ErrorAction SilentlyContinue
+    if ($null -eq $contentObj) {
+        return ""
+    }
+    return ([string]$contentObj).Trim()
+}
+
+function New-Ros2CommandExpression {
+    param([string[]]$Args)
+
+    $quotedArgs = @(
+        $Args | ForEach-Object { "'" + ([string]$_ -replace "'", "''") + "'" }
+    ) -join ", "
+    return "& { & ros2 @($quotedArgs) }"
+}
+
+function Start-Ros2CommandProcess {
+    param(
+        [string[]]$Args,
+        [string]$StdoutPath,
+        [string]$StderrPath
+    )
+
+    $shellExe = Get-PreferredShell
+    $command = New-Ros2CommandExpression -Args $Args
+    return Start-Process -FilePath $shellExe `
+        -ArgumentList @("-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", $command) `
+        -PassThru `
+        -RedirectStandardOutput $StdoutPath `
+        -RedirectStandardError $StderrPath `
+        -WindowStyle Hidden
+}
+
+function Invoke-Ros2CommandCapture {
+    param(
+        [string[]]$Args,
+        [int]$TimeoutSec
+    )
+
+    $outFile = Join-Path $env:TEMP ("programme_ros2_" + [guid]::NewGuid().ToString() + ".out.log")
+    $errFile = Join-Path $env:TEMP ("programme_ros2_" + [guid]::NewGuid().ToString() + ".err.log")
+    try {
+        $proc = Start-Ros2CommandProcess -Args $Args -StdoutPath $outFile -StderrPath $errFile
+        $exited = $proc.WaitForExit($TimeoutSec * 1000)
+        if (-not $exited) {
+            Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
+        }
+
+        return [PSCustomObject]@{
+            Exited   = $exited
+            ExitCode = if ($exited) { $proc.ExitCode } else { $null }
+            Stdout   = Read-TextSafe -Path $outFile
+            Stderr   = Read-TextSafe -Path $errFile
+        }
+    }
+    catch {
+        return [PSCustomObject]@{
+            Exited   = $false
+            ExitCode = $null
+            Stdout   = ""
+            Stderr   = ""
+        }
+    }
+    finally {
+        Remove-Item $outFile, $errFile -Force -ErrorAction SilentlyContinue
+    }
+}
+
 function Get-TopicListSafe {
     param(
         [int]$CommandTimeoutSec = 3
     )
 
-    $outFile = Join-Path $env:TEMP ("programme_topic_list_" + [guid]::NewGuid().ToString() + ".out.log")
-    $errFile = Join-Path $env:TEMP ("programme_topic_list_" + [guid]::NewGuid().ToString() + ".err.log")
-    try {
-        $proc = Start-Process -FilePath ros2 -ArgumentList @("topic", "list") -PassThru -RedirectStandardOutput $outFile -RedirectStandardError $errFile -WindowStyle Hidden
-        $exited = $proc.WaitForExit($CommandTimeoutSec * 1000)
-        if (-not $exited) {
-            Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
-            return @()
-        }
-        if ($proc.ExitCode -ne 0) {
-            return @()
-        }
-
-        $lines = Get-Content -Path $outFile -ErrorAction SilentlyContinue
-        if ($null -eq $lines) {
-            return @()
-        }
-        return @(
-            $lines |
-                ForEach-Object { ([string]$_).Trim() } |
-                Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
-        )
-    }
-    catch {
+    $result = Invoke-Ros2CommandCapture -Args @("topic", "list") -TimeoutSec $CommandTimeoutSec
+    if ((-not $result.Exited) -or ($result.ExitCode -ne 0) -or (-not $result.Stdout)) {
         return @()
     }
-    finally {
-        Remove-Item $outFile, $errFile -Force -ErrorAction SilentlyContinue
-    }
+
+    return @(
+        $result.Stdout -split "`r?`n" |
+            ForEach-Object { ([string]$_).Trim() } |
+            Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+    )
 }
 
 function Wait-Topic {
@@ -91,7 +153,7 @@ function Get-TopicAverageHz {
     $outFile = Join-Path $env:TEMP ("programme_hz_" + [guid]::NewGuid().ToString() + ".out.log")
     $errFile = Join-Path $env:TEMP ("programme_hz_" + [guid]::NewGuid().ToString() + ".err.log")
     try {
-        $proc = Start-Process -FilePath ros2 -ArgumentList @("topic", "hz", $TopicName) -PassThru -RedirectStandardOutput $outFile -RedirectStandardError $errFile -WindowStyle Hidden
+        $proc = Start-Ros2CommandProcess -Args @("topic", "hz", $TopicName) -StdoutPath $outFile -StderrPath $errFile
         Start-Sleep -Seconds $SampleSec
         if (-not $proc.HasExited) {
             Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue

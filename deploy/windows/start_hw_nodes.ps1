@@ -144,7 +144,7 @@ if ($StartRealsense) {
             "-p max_consecutive_timeouts:=8",
             "-p restart_cooldown_sec:=1.5",
             "-p capture_stale_sec:=1.5",
-            "-p publish_only_when_new_frame:=true"
+            "-p publish_only_when_new_frame:=true",
             "-p use_reliable_qos:=true"
         )
         if ($RealsenseSerial) {
