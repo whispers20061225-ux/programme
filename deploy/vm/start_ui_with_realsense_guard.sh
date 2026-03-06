@@ -50,8 +50,13 @@ has_ros_package() {
 }
 
 case "${VISION_PROFILE}" in
-  minimal|lite|raw)
+  minimal|lite)
     VISION_PROFILE="minimal"
+    USE_RELAY_TOPICS="true"
+    ENABLE_REALSENSE_MONITOR="false"
+    ;;
+  raw)
+    VISION_PROFILE="raw"
     USE_RELAY_TOPICS="false"
     ENABLE_REALSENSE_MONITOR="false"
     ;;

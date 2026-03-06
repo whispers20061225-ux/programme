@@ -1082,12 +1082,6 @@ class MainWindow(QMainWindow):
         if self._ros2_vision_last_frame_age_ms is not None:
             self._ros2_vision_last_upstream_frame_wall_ts = time.time() - (float(self._ros2_vision_last_frame_age_ms) / 1000.0)
         self._update_vision_status_widgets()
-        self.control_panel.update_device_status(
-            vision={
-                "connected": self._ros2_vision_connected,
-                "simulation": self._ros2_vision_simulation,
-            }
-        )
 
     def _get_detection_config(self) -> Dict[str, Any]:
         """生成检测配置，兼容 DemoConfig 或 CameraConfig"""
