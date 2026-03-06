@@ -129,6 +129,8 @@ class MainWindow(QMainWindow):
         self.frame_count = 0
         self.start_time = time.time()
         self.data_rate = 0
+        self._last_packet_label_ts = 0.0
+        self._last_control_panel_data_ts = 0.0
         
         # 数据缓冲区
         self.sensor_data_buffer = None
@@ -2564,11 +2566,15 @@ class MainWindow(QMainWindow):
             self.force_data_buffer = data
         
         # 更新控制面板
-        if self.frame_count % 10 == 0:
+        now = time.time()
+        if (now - self._last_control_panel_data_ts) >= 0.2:
+            self._last_control_panel_data_ts = now
             QTimer.singleShot(0, lambda: self.control_panel.update_data_display(data))
         
         # 更新数据包计数
-        self.packet_label.setText(f"数据包: {self.frame_count}")
+        if (now - self._last_packet_label_ts) >= 0.2:
+            self._last_packet_label_ts = now
+            self.packet_label.setText(f"Packets: {self.frame_count}")
     
     def update_all_plots(self):
         """????????????????"""

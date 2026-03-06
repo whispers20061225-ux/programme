@@ -55,14 +55,22 @@ class DepthProcessor:
             camera_matrix: 相机内参矩阵 (3x3)
             dist_coeffs: 畸变系数
         """
-        self.camera_matrix = camera_matrix.astype(np.float32)
-        
+        new_camera_matrix = camera_matrix.astype(np.float32)
         if dist_coeffs is not None:
-            self.dist_coeffs = dist_coeffs.astype(np.float32)
+            new_dist_coeffs = dist_coeffs.astype(np.float32)
         else:
-            self.dist_coeffs = np.zeros((4,), dtype=np.float32)
-        
-        logger.info(f"Camera parameters set: fx={camera_matrix[0,0]}, fy={camera_matrix[1,1]}")
+            new_dist_coeffs = np.zeros((4,), dtype=np.float32)
+
+        if self.camera_matrix is not None and self.dist_coeffs is not None:
+            try:
+                if np.allclose(self.camera_matrix, new_camera_matrix) and np.allclose(self.dist_coeffs, new_dist_coeffs):
+                    return
+            except Exception:
+                pass
+
+        self.camera_matrix = new_camera_matrix
+        self.dist_coeffs = new_dist_coeffs
+        logger.info(f"Camera parameters set: fx={new_camera_matrix[0,0]}, fy={new_camera_matrix[1,1]}")
     
     def preprocess_depth(self, depth_image: np.ndarray) -> np.ndarray:
         """

@@ -14,7 +14,8 @@ from core.data_acquisition import DataBuffer, SensorData
 
 try:
     import rclpy
-    from rclpy.executors import ExternalShutdownException, SingleThreadedExecutor
+    from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
+    from rclpy.executors import ExternalShutdownException, MultiThreadedExecutor, SingleThreadedExecutor
     from rclpy.node import Node
     from rclpy.qos import HistoryPolicy, QoSProfile, ReliabilityPolicy
     from sensor_msgs.msg import CameraInfo, Image
@@ -24,7 +25,9 @@ try:
 except Exception as exc:  # pragma: no cover - optional dependency at runtime
     rclpy = None
     ExternalShutdownException = Exception
+    MultiThreadedExecutor = None
     SingleThreadedExecutor = None
+    MutuallyExclusiveCallbackGroup = None
     Node = object
     QoSProfile = None
     ReliabilityPolicy = None
@@ -64,6 +67,10 @@ class _Ros2AcquisitionNode(Node):
         super().__init__("ros2_tactile_acquisition")
         self._owner = owner
 
+        tactile_group = MutuallyExclusiveCallbackGroup() if MutuallyExclusiveCallbackGroup is not None else None
+        health_group = MutuallyExclusiveCallbackGroup() if MutuallyExclusiveCallbackGroup is not None else None
+        vision_group = MutuallyExclusiveCallbackGroup() if MutuallyExclusiveCallbackGroup is not None else None
+
         tactile_qos = QoSProfile(
             reliability=ReliabilityPolicy.BEST_EFFORT,
             history=HistoryPolicy.KEEP_LAST,
@@ -88,15 +95,19 @@ class _Ros2AcquisitionNode(Node):
             depth=10,
         )
 
-        self.create_subscription(TactileRaw, tactile_topic, self._on_tactile, tactile_qos)
-        self.create_subscription(SystemHealth, health_topic, self._on_health, health_qos)
+        tactile_kwargs = {"callback_group": tactile_group} if tactile_group is not None else {}
+        health_kwargs = {"callback_group": health_group} if health_group is not None else {}
+        vision_kwargs = {"callback_group": vision_group} if vision_group is not None else {}
+
+        self.create_subscription(TactileRaw, tactile_topic, self._on_tactile, tactile_qos, **tactile_kwargs)
+        self.create_subscription(SystemHealth, health_topic, self._on_health, health_qos, **health_kwargs)
         if vision_enabled:
             self.get_logger().info(
                 f"Vision QoS resolved: requested={mode} effective={self._reliability_label(vision_reliability)}"
             )
-            self.create_subscription(Image, color_topic, self._on_color, vision_qos)
-            self.create_subscription(Image, depth_topic, self._on_depth, vision_qos)
-            self.create_subscription(CameraInfo, camera_info_topic, self._on_camera_info, vision_qos)
+            self.create_subscription(Image, color_topic, self._on_color, vision_qos, **vision_kwargs)
+            self.create_subscription(Image, depth_topic, self._on_depth, vision_qos, **vision_kwargs)
+            self.create_subscription(CameraInfo, camera_info_topic, self._on_camera_info, vision_qos, **vision_kwargs)
 
     def _resolve_vision_reliability(
         self,
@@ -262,6 +273,8 @@ class Ros2DataAcquisitionThread(QThread):
         self._vision_latest_frame_seq = 0
         self._vision_consumed_frame_seq = 0
         self._vision_error_last_emit_ts: Dict[str, float] = {}
+        self._tactile_ui_emit_interval_sec = 1.0 / 30.0
+        self._tactile_ui_last_emit_ts = 0.0
 
     def run(self) -> None:
         if ROS2_IMPORT_ERROR is not None:
@@ -292,7 +305,10 @@ class Ros2DataAcquisitionThread(QThread):
                 camera_info_topic=self.camera_info_topic,
                 vision_qos_mode=self.vision_qos_mode,
             )
-            self._executor = SingleThreadedExecutor()
+            if MultiThreadedExecutor is not None:
+                self._executor = MultiThreadedExecutor(num_threads=2)
+            else:
+                self._executor = SingleThreadedExecutor()
             self._executor.add_node(self._node)
 
             self.status_changed.emit(
@@ -316,7 +332,7 @@ class Ros2DataAcquisitionThread(QThread):
                 if not self.running:
                     break
 
-                self._executor.spin_once(timeout_sec=0.05)
+                self._executor.spin_once(timeout_sec=0.02)
 
                 now = time.time()
                 if now - self._status_emit_ts >= 1.0:
@@ -420,7 +436,10 @@ class Ros2DataAcquisitionThread(QThread):
                     )
 
             self.data_buffer.add_data(data)
-            self.new_data.emit(data)
+            emit_now = time.time()
+            if (emit_now - self._tactile_ui_last_emit_ts) >= self._tactile_ui_emit_interval_sec:
+                self._tactile_ui_last_emit_ts = emit_now
+                self.new_data.emit(data)
         except Exception as exc:
             self.error_count += 1
             self.error_occurred.emit("message_parse_error", {"error": str(exc)})
