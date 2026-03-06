@@ -744,14 +744,20 @@ class MainWindow(QMainWindow):
             if now - self.last_auto_detect_time < auto_interval:
                 return
             self.last_auto_detect_time = now
+        enable_pose = self._should_include_pose_for_analysis(reason)
+        enable_material = self._should_include_material_for_analysis(reason)
+        enable_depth_positions = self._should_include_depth_positions_for_analysis(reason, enable_pose)
         task = {
             "frame_timestamp": float(getattr(frame, "timestamp", 0.0) or 0.0),
             "color_image": frame.color_image,
             "depth_image": getattr(frame, "depth_image", None),
             "intrinsics": dict(getattr(frame, "intrinsics", {}) or {}),
             "detection_cfg": self._get_detection_config(),
-            "material_cfg": self._get_material_config(),
-            "pose_cfg": self._get_pose_config(),
+            "material_cfg": self._get_material_config() if enable_material else None,
+            "pose_cfg": self._get_pose_config() if enable_pose else None,
+            "enable_depth_positions": bool(enable_depth_positions),
+            "enable_material": bool(enable_material),
+            "enable_pose": bool(enable_pose),
             "reason": reason,
             "show_error": bool(show_error),
         }
@@ -793,6 +799,24 @@ class MainWindow(QMainWindow):
         if self._ros2_vision_render_fps > 0.0 and self._ros2_vision_render_fps < 12.0:
             interval = max(interval, 2.0)
         return interval
+
+    def _should_include_pose_for_analysis(self, reason: str) -> bool:
+        if not self.vision_viewer or not self.vision_tab:
+            return False
+        if self.tab_widget.currentWidget() is not self.vision_tab:
+            return False
+        return bool(getattr(self.vision_viewer, "is_pose_tab_active", lambda: False)())
+
+    def _should_include_material_for_analysis(self, reason: str) -> bool:
+        return False
+
+    def _should_include_depth_positions_for_analysis(self, reason: str, enable_pose: bool) -> bool:
+        if enable_pose:
+            return True
+        if self._pointcloud_refresh_requested or self._is_pointcloud_view_active():
+            cfg = self._get_pointcloud_fusion_config() or {}
+            return bool(cfg.get("roi_use_detection", False))
+        return reason != "auto"
 
     def _is_pointcloud_view_active(self) -> bool:
         if not self.vision_viewer or not self.vision_tab:
@@ -1397,6 +1421,9 @@ class MainWindow(QMainWindow):
             raise RuntimeError("?????")
         depth_image = task.get("depth_image")
         intrinsics = dict(task.get("intrinsics") or {})
+        enable_depth_positions = bool(task.get("enable_depth_positions", False))
+        enable_material = bool(task.get("enable_material", False))
+        enable_pose = bool(task.get("enable_pose", False))
         detector = self._ensure_object_detector(task.get("detection_cfg"))
         if detector is None:
             raise RuntimeError("??????????????????")
@@ -1431,7 +1458,7 @@ class MainWindow(QMainWindow):
                 bbox_f = [float(v) for v in bbox]
                 detection_bboxes.append(bbox_f)
                 cam_pos = None
-                if depth_image is not None:
+                if enable_depth_positions and depth_image is not None:
                     cam_pos = self._estimate_object_position_from_depth(depth_image, bbox_f, intrinsics)
                 if cam_pos is not None:
                     depth_positions[id(det)] = cam_pos
@@ -1445,7 +1472,7 @@ class MainWindow(QMainWindow):
                     }
                 )
 
-        mat_recognizer = self._ensure_material_recognizer(task.get("material_cfg"))
+        mat_recognizer = self._ensure_material_recognizer(task.get("material_cfg")) if enable_material else None
         if mat_recognizer:
             h_img, w_img = image.shape[:2]
             for det in detections:
@@ -1464,38 +1491,39 @@ class MainWindow(QMainWindow):
                             self.logger.debug("?????????: %s", exc)
 
         pose_results: List[Dict[str, Any]] = []
-        pose_estimator = self._ensure_pose_estimator(task.get("pose_cfg"))
+        pose_estimator = self._ensure_pose_estimator(task.get("pose_cfg")) if enable_pose else None
         if pose_estimator and intrinsics:
             cam_mtx = self._build_camera_matrix_from_intrinsics(intrinsics)
             if cam_mtx is not None:
                 pose_estimator.camera_matrix = cam_mtx
         h_img, w_img = image.shape[:2]
-        for det in detections:
-            bbox = getattr(det, "bbox", getattr(det, "box", []))
-            pose_dict = None
-            if bbox and len(bbox) == 4 and pose_estimator:
-                try:
-                    obj_class = getattr(det, "class_name", None) or "object"
-                    pose_estimator.ensure_simple_model(obj_class)
-                    pose_obj = pose_estimator.estimate_pose(image, depth_image, obj_class, bbox)
-                    if pose_obj:
-                        pose_dict = {
-                            "bbox": bbox,
-                            "rotation": pose_obj.rotation,
-                            "translation": pose_obj.position,
-                            "object_class": getattr(det, "class_name", "object"),
-                            "confidence": pose_obj.confidence,
-                            "method": getattr(pose_obj, "method", "pnp"),
-                        }
-                except Exception as exc:
-                    self.logger.debug("????????????: %s", exc)
-            if pose_dict is None:
-                pose_dict = self._generate_pose_stub(bbox, w_img, h_img, getattr(det, "class_name", "object"))
-            cam_pos = depth_positions.get(id(det))
-            if cam_pos is not None:
-                pose_dict["translation"] = cam_pos
-                pose_dict["method"] = "depth_roi"
-            pose_results.append(pose_dict)
+        if enable_pose:
+            for det in detections:
+                bbox = getattr(det, "bbox", getattr(det, "box", []))
+                pose_dict = None
+                if bbox and len(bbox) == 4 and pose_estimator:
+                    try:
+                        obj_class = getattr(det, "class_name", None) or "object"
+                        pose_estimator.ensure_simple_model(obj_class)
+                        pose_obj = pose_estimator.estimate_pose(image, depth_image, obj_class, bbox)
+                        if pose_obj:
+                            pose_dict = {
+                                "bbox": bbox,
+                                "rotation": pose_obj.rotation,
+                                "translation": pose_obj.position,
+                                "object_class": getattr(det, "class_name", "object"),
+                                "confidence": pose_obj.confidence,
+                                "method": getattr(pose_obj, "method", "pnp"),
+                            }
+                    except Exception as exc:
+                        self.logger.debug("????????????: %s", exc)
+                if pose_dict is None:
+                    pose_dict = self._generate_pose_stub(bbox, w_img, h_img, getattr(det, "class_name", "object"))
+                cam_pos = depth_positions.get(id(det))
+                if cam_pos is not None:
+                    pose_dict["translation"] = cam_pos
+                    pose_dict["method"] = "depth_roi"
+                pose_results.append(pose_dict)
 
         return {
             "detection_bboxes": detection_bboxes,
@@ -1557,8 +1585,11 @@ class MainWindow(QMainWindow):
                     "depth_image": depth_image,
                     "intrinsics": dict(intrinsics or {}),
                     "detection_cfg": self._get_detection_config(),
-                    "material_cfg": self._get_material_config(),
-                    "pose_cfg": self._get_pose_config(),
+                    "material_cfg": None,
+                    "pose_cfg": None,
+                    "enable_depth_positions": bool(depth_image is not None),
+                    "enable_material": False,
+                    "enable_pose": False,
                     "reason": "manual-sync",
                     "show_error": True,
                 }

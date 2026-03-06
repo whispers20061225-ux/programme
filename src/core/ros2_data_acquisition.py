@@ -16,6 +16,7 @@ try:
     import rclpy
     from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
     from rclpy.executors import ExternalShutdownException, MultiThreadedExecutor, SingleThreadedExecutor
+    from rclpy.exceptions import RCLError
     from rclpy.node import Node
     from rclpy.qos import HistoryPolicy, QoSProfile, ReliabilityPolicy
     from sensor_msgs.msg import CameraInfo, Image
@@ -25,6 +26,7 @@ try:
 except Exception as exc:  # pragma: no cover - optional dependency at runtime
     rclpy = None
     ExternalShutdownException = Exception
+    RCLError = Exception
     MultiThreadedExecutor = None
     SingleThreadedExecutor = None
     MutuallyExclusiveCallbackGroup = None
@@ -335,7 +337,12 @@ class Ros2DataAcquisitionThread(QThread):
                 if not self.running:
                     break
 
-                self._executor.spin_once(timeout_sec=0.02)
+                try:
+                    self._executor.spin_once(timeout_sec=0.02)
+                except RCLError as exc:
+                    if not self.running or (rclpy is not None and not rclpy.ok()):
+                        break
+                    raise exc
 
                 now = time.time()
                 if now - self._status_emit_ts >= 1.0:

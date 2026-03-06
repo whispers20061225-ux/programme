@@ -3,6 +3,7 @@
 支持YOLO, SSD, Faster R-CNN等模型
 """
 
+import os
 import torch
 import torchvision
 import cv2
@@ -15,6 +16,29 @@ import time
 from utils.logging_config import get_logger
 
 logger = get_logger(__name__)
+
+_RUNTIME_THREADS_CONFIGURED = False
+
+
+def _configure_runtime_threads() -> None:
+    global _RUNTIME_THREADS_CONFIGURED
+    if _RUNTIME_THREADS_CONFIGURED:
+        return
+    try:
+        cpu_count = os.cpu_count() or 2
+        torch.set_num_threads(max(1, min(2, cpu_count // 2)))
+    except Exception:
+        pass
+    try:
+        if hasattr(torch, "set_num_interop_threads"):
+            torch.set_num_interop_threads(1)
+    except Exception:
+        pass
+    try:
+        cv2.setNumThreads(1)
+    except Exception:
+        pass
+    _RUNTIME_THREADS_CONFIGURED = True
 
 @dataclass
 class DetectionResult:
@@ -46,6 +70,7 @@ class ObjectDetector:
         Args:
             config: 检测器配置
         """
+        _configure_runtime_threads()
         self.config = config
         self.model_name = config.get('model_name', 'yolov5')
         self.model_path = config.get('model_path')
@@ -246,7 +271,7 @@ class ObjectDetector:
             timestamp=timestamp,
             detections=detections,
             original_image=image,
-            processed_image=self._draw_detections(image.copy(), detections)
+            processed_image=image
         )
         
         # 记录性能
