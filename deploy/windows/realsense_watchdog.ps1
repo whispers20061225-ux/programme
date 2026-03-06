@@ -48,6 +48,36 @@ function Read-TextSafe {
     return ([string]$contentObj).Trim()
 }
 
+function Get-TopicListDirect {
+    $oldNativeBehavior = $null
+    $hasNativePref = $false
+    if (Get-Variable -Name PSNativeCommandUseErrorActionPreference -Scope Global -ErrorAction SilentlyContinue) {
+        $hasNativePref = $true
+        $oldNativeBehavior = $Global:PSNativeCommandUseErrorActionPreference
+        $Global:PSNativeCommandUseErrorActionPreference = $false
+    }
+
+    try {
+        $topics = & ros2 topic list 2>$null
+        if ($LASTEXITCODE -ne 0 -or $null -eq $topics) {
+            return @()
+        }
+        return @(
+            @($topics) |
+                ForEach-Object { ([string]$_).Trim() } |
+                Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+        )
+    }
+    catch {
+        return @()
+    }
+    finally {
+        if ($hasNativePref) {
+            $Global:PSNativeCommandUseErrorActionPreference = $oldNativeBehavior
+        }
+    }
+}
+
 function New-Ros2CommandExpression {
     param([string[]]$Args)
 
@@ -111,8 +141,13 @@ function Invoke-Ros2CommandCapture {
 
 function Get-TopicListSafe {
     param(
-        [int]$CommandTimeoutSec = 3
+        [int]$CommandTimeoutSec = 6
     )
+
+    $topics = Get-TopicListDirect
+    if ($topics.Count -gt 0) {
+        return $topics
+    }
 
     $result = Invoke-Ros2CommandCapture -Args @("topic", "list") -TimeoutSec $CommandTimeoutSec
     if ((-not $result.Exited) -or ($result.ExitCode -ne 0) -or (-not $result.Stdout)) {
@@ -136,13 +171,15 @@ function Wait-Topic {
     $topicWithSlash = if ($topicAlt) { "/$topicAlt" } else { $TopicName }
     $deadline = (Get-Date).AddSeconds($TimeoutSec)
     while ((Get-Date) -lt $deadline) {
-        $topics = Get-TopicListSafe -CommandTimeoutSec 3
+        $topics = Get-TopicListSafe -CommandTimeoutSec 6
         if (($topics -contains $TopicName) -or ($topics -contains $topicAlt) -or ($topics -contains $topicWithSlash)) {
             return $true
         }
-        Start-Sleep -Milliseconds 500
+        Start-Sleep -Milliseconds 750
     }
-    return $false
+
+    $finalTopics = Get-TopicListSafe -CommandTimeoutSec ([Math]::Max(6, [Math]::Min(10, $TimeoutSec)))
+    return (($finalTopics -contains $TopicName) -or ($finalTopics -contains $topicAlt) -or ($finalTopics -contains $topicWithSlash))
 }
 function Get-TopicAverageHz {
     param(
