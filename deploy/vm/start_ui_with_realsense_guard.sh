@@ -49,6 +49,42 @@ has_ros_package() {
   return ${rc}
 }
 
+auto_build_vm_relay_packages() {
+  local ws_dir="${PROJECT_ROOT}/ros2_ws"
+  local src_dir="${ws_dir}/src/tactile_vision_cpp"
+  local build_log="${LAUNCH_LOG_DIR}/vm_relay_build_$(date +%Y%m%d_%H%M%S).log"
+
+  if [[ ! -d "${src_dir}" ]]; then
+    log_fail "relay source package not found: ${src_dir}"
+    return 1
+  fi
+
+  mkdir -p "${LAUNCH_LOG_DIR}"
+  log_step "building missing VM relay packages"
+  echo "[INFO] build log: ${build_log}"
+
+  pushd "${ws_dir}" >/dev/null
+  set +e
+  colcon build --symlink-install \
+    --packages-select tactile_vision tactile_vision_cpp tactile_bringup \
+    >"${build_log}" 2>&1
+  local rc=$?
+  set -e
+  popd >/dev/null
+
+  if [[ ${rc} -ne 0 ]]; then
+    log_fail "failed to build VM relay packages. Check log: ${build_log}"
+    return 1
+  fi
+
+  log_ok "VM relay packages built"
+  # shellcheck disable=SC1091
+  source "${SCRIPT_DIR}/env_ros2_vm.sh" "${DOMAIN_ID}"
+  ros2 daemon stop >/dev/null 2>&1 || true
+  ros2 daemon start >/dev/null 2>&1 || true
+  return 0
+}
+
 case "${VISION_PROFILE}" in
   minimal|lite)
     VISION_PROFILE="minimal"
@@ -414,12 +450,16 @@ if is_true "${ARM_REQUIRED}"; then
 fi
 
 if [[ "${USE_RELAY_TOPICS}" == "true" ]] && ! has_ros_package "tactile_vision_cpp"; then
-  USE_RELAY_TOPICS="false"
-  ENABLE_REALSENSE_MONITOR="false"
-  VISION_COLOR_TOPIC="/camera/camera/color/image_raw"
-  VISION_DEPTH_TOPIC="/camera/camera/aligned_depth_to_color/image_raw"
-  VISION_CAMERA_INFO_TOPIC="/camera/camera/color/camera_info"
-  echo "[WARN] package tactile_vision_cpp not found on VM; disabling latest_frame_relay_node and monitor."
+  echo "[WARN] package tactile_vision_cpp not found on VM; attempting automatic build."
+  if ! auto_build_vm_relay_packages; then
+    log_fail "relay requested but tactile_vision_cpp is unavailable on VM"
+    log_fail "Build once manually if needed: cd ${PROJECT_ROOT}/ros2_ws && colcon build --symlink-install --packages-select tactile_vision tactile_vision_cpp tactile_bringup"
+    exit 1
+  fi
+  if ! has_ros_package "tactile_vision_cpp"; then
+    log_fail "relay requested but tactile_vision_cpp is still unavailable after build"
+    exit 1
+  fi
 fi
 
 if [[ "${USE_RELAY_TOPICS}" == "false" ]]; then
