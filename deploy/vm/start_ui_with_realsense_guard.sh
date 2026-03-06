@@ -18,9 +18,11 @@ VISION_UI_STALE_TIMEOUT_SEC="${VISION_UI_STALE_TIMEOUT_SEC:-3.0}"
 VISION_QOS_MODE="${VISION_QOS_MODE:-auto}"
 USE_LATEST_FRAME_RELAY_ENV="${USE_LATEST_FRAME_RELAY:-}"
 START_REALSENSE_MONITOR_ENV="${START_REALSENSE_MONITOR:-}"
+VM_ARM_SERIAL_PORT_ENV="${VM_ARM_SERIAL_PORT:-}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+BASE_PARAM_FILE="${PROJECT_ROOT}/ros2_ws/src/tactile_bringup/config/split_vm_app.yaml"
 LAUNCH_LOG_DIR="${PROJECT_ROOT}/ros2_ws/log"
 LAUNCH_LOG_FILE="${LAUNCH_LOG_DIR}/split_vm_app_$(date +%Y%m%d_%H%M%S).log"
 
@@ -31,6 +33,7 @@ VISION_COLOR_TOPIC="/camera/camera/color/image_raw"
 VISION_DEPTH_TOPIC="/camera/camera/aligned_depth_to_color/image_raw"
 VISION_CAMERA_INFO_TOPIC="/camera/camera/color/camera_info"
 PARAM_FILE_PATH=""
+VM_ARM_SERIAL_PORT=""
 
 log_step() { echo "[STEP] $*"; }
 log_ok() { echo "[OK] $*"; }
@@ -152,12 +155,101 @@ wait_for_service() {
   return 1
 }
 
-read_windows_arm_port_hint() {
-  local config_file="${PROJECT_ROOT}/ros2_ws/src/tactile_bringup/config/split_windows_hardware.yaml"
-  if [[ ! -f "${config_file}" ]]; then
+ensure_param_file_copy() {
+  if [[ -n "${PARAM_FILE_PATH}" ]]; then
     return 0
   fi
-  grep -m1 'arm_serial_port:' "${config_file}" 2>/dev/null | sed -E 's/.*arm_serial_port:[[:space:]]*"?([^\"]+)"?$/\1/'
+  PARAM_FILE_PATH="$(mktemp)"
+  cp "${BASE_PARAM_FILE}" "${PARAM_FILE_PATH}"
+}
+
+configure_vm_arm_serial_port() {
+  local serial_port="$1"
+  local escaped_port="${serial_port//&/\&}"
+  ensure_param_file_copy
+  sed -i -E "0,/arm_serial_port:[[:space:]]*.*$/s#arm_serial_port:[[:space:]]*.*#    arm_serial_port: \"${escaped_port}\"#" "${PARAM_FILE_PATH}"
+}
+
+print_vm_arm_serial_diagnostics() {
+  local had_nullglob=0
+  local by_id_candidates=()
+  local tty_candidates=()
+
+  if shopt -q nullglob; then
+    had_nullglob=1
+  fi
+  shopt -s nullglob
+  by_id_candidates=(/dev/serial/by-id/*)
+  tty_candidates=(/dev/ttyACM* /dev/ttyUSB*)
+  if (( had_nullglob == 0 )); then
+    shopt -u nullglob
+  fi
+
+  echo "[DIAG] VM serial devices (/dev/serial/by-id):"
+  if (( ${#by_id_candidates[@]} > 0 )); then
+    ls -l "${by_id_candidates[@]}" 2>/dev/null || true
+  else
+    echo "(none)"
+  fi
+
+  echo "[DIAG] VM serial devices (/dev/ttyACM* /dev/ttyUSB*):"
+  if (( ${#tty_candidates[@]} > 0 )); then
+    ls -l "${tty_candidates[@]}" 2>/dev/null || true
+  else
+    echo "(none)"
+  fi
+}
+
+resolve_vm_arm_serial_port() {
+  local had_nullglob=0
+  local candidates=()
+  local override_port="${VM_ARM_SERIAL_PORT_ENV}"
+  local path=""
+  local lower=""
+
+  if [[ -n "${override_port}" ]]; then
+    if [[ -e "${override_port}" ]]; then
+      printf '%s\n' "${override_port}"
+      return 0
+    fi
+    echo "[WARN] VM_ARM_SERIAL_PORT=${override_port} does not exist; auto-detecting instead." >&2
+  fi
+
+  if shopt -q nullglob; then
+    had_nullglob=1
+  fi
+  shopt -s nullglob
+
+  for path in /dev/serial/by-id/*; do
+    lower="${path,,}"
+    if [[ "${lower}" == *stm32* || "${lower}" == *stmicro* || "${lower}" == *virtual*com* || "${lower}" == *0483* ]]; then
+      candidates+=("${path}")
+    fi
+  done
+
+  if (( ${#candidates[@]} == 0 )); then
+    for path in /dev/ttyACM*; do
+      candidates+=("${path}")
+    done
+  fi
+
+  if (( ${#candidates[@]} == 0 )); then
+    for path in /dev/ttyUSB*; do
+      candidates+=("${path}")
+    done
+  fi
+
+  if (( had_nullglob == 0 )); then
+    shopt -u nullglob
+  fi
+
+  if (( ${#candidates[@]} == 0 )); then
+    return 1
+  fi
+  if (( ${#candidates[@]} > 1 )); then
+    echo "[WARN] multiple VM STM32 serial candidates found; using ${candidates[0]}" >&2
+  fi
+  printf '%s\n' "${candidates[0]}"
 }
 
 call_setbool_service() {
@@ -298,6 +390,16 @@ source "${SCRIPT_DIR}/env_ros2_vm.sh" "${DOMAIN_ID}"
 ros2 daemon stop >/dev/null 2>&1 || true
 ros2 daemon start >/dev/null 2>&1 || true
 
+if is_true "${ARM_REQUIRED}"; then
+  if ! VM_ARM_SERIAL_PORT="$(resolve_vm_arm_serial_port)"; then
+    log_fail "no STM32 serial device detected on VM"
+    print_vm_arm_serial_diagnostics
+    exit 1
+  fi
+  log_ok "VM STM32 serial detected: ${VM_ARM_SERIAL_PORT}"
+  configure_vm_arm_serial_port "${VM_ARM_SERIAL_PORT}"
+fi
+
 if [[ "${USE_RELAY_TOPICS}" == "true" ]] && ! has_ros_package "tactile_vision_cpp"; then
   USE_RELAY_TOPICS="false"
   ENABLE_REALSENSE_MONITOR="false"
@@ -313,8 +415,7 @@ if [[ "${USE_RELAY_TOPICS}" == "false" ]]; then
   VISION_CAMERA_INFO_TOPIC="/camera/camera/color/camera_info"
 
   if [[ "${ENABLE_REALSENSE_MONITOR}" == "true" ]]; then
-    PARAM_FILE_PATH="$(mktemp)"
-    cp "${PROJECT_ROOT}/ros2_ws/src/tactile_bringup/config/split_vm_app.yaml" "${PARAM_FILE_PATH}"
+    ensure_param_file_copy
     sed -i \
       -e "s#/camera/relay/color/image_raw#${VISION_COLOR_TOPIC}#g" \
       -e "s#/camera/relay/aligned_depth_to_color/image_raw#${VISION_DEPTH_TOPIC}#g" \
@@ -342,11 +443,17 @@ log_step "cleaning stale VM ROS2 processes"
 pkill -f "split_vm_app.launch.py" >/dev/null 2>&1 || true
 pkill -f "latest_frame_relay_node" >/dev/null 2>&1 || true
 pkill -f "realsense_monitor_node" >/dev/null 2>&1 || true
+pkill -f "arm_driver_node" >/dev/null 2>&1 || true
 sleep 1
 
 mkdir -p "${LAUNCH_LOG_DIR}"
 log_step "starting split_vm_app.launch.py in background"
 launch_args=("start_tactile_sensor:=${START_TACTILE_SENSOR}")
+if is_true "${ARM_REQUIRED}"; then
+  launch_args+=("start_arm_driver:=true")
+else
+  launch_args+=("start_arm_driver:=false")
+fi
 if [[ "${USE_RELAY_TOPICS}" == "true" ]]; then
   launch_args+=("start_latest_frame_relay:=true")
 else
@@ -373,6 +480,9 @@ echo "[INFO] launch log: ${LAUNCH_LOG_FILE}"
 
 log_step "validating VM-side core nodes"
 core_nodes=("/arm_control_node" "/demo_task_node" "/tactile_ui_subscriber")
+if is_true "${ARM_REQUIRED}"; then
+  core_nodes=("/arm_driver_node" "${core_nodes[@]}")
+fi
 if [[ "${USE_RELAY_TOPICS}" == "true" ]]; then
   core_nodes+=("/latest_frame_relay_node")
 fi
@@ -448,17 +558,18 @@ if is_true "${START_TACTILE_SENSOR}"; then
 fi
 
 if is_true "${ARM_REQUIRED}"; then
-  log_step "validating arm hardware/control chain"
+  log_step "validating VM STM32/arm chain"
   if ! wait_for_topic "/arm/state" "${ARM_TIMEOUT_SEC}"; then
     log_fail "topic /arm/state not available within ${ARM_TIMEOUT_SEC}s"
-    log_fail "Windows side likely started camera only. Start arm driver on Windows:"
-    log_fail "C:\Users\whisp\Desktop\dayi\programme\deploy\windows\start_hw_nodes.ps1 -RosSetup <ros_setup> -DomainId ${DOMAIN_ID} -StartArm:\$true -StartRealsense:\$true -Execute"
+    log_fail "VM arm_driver_node did not publish arm state. Check STM32 passthrough to the VM."
+    print_vm_arm_serial_diagnostics
     exit 1
   fi
   for svc in "/arm/enable" "/arm/home" "/arm/move_joint" "/arm/move_joints" "/control/arm/enable" "/control/arm/move_joint"; do
     if ! wait_for_service "${svc}" "${ARM_TIMEOUT_SEC}"; then
       log_fail "required arm service missing: ${svc}"
-      log_fail "Check Windows arm_driver_node and VM arm_control_node."
+      log_fail "Check VM arm_driver_node and arm_control_node."
+      print_vm_arm_serial_diagnostics
       exit 1
     fi
   done
@@ -470,25 +581,25 @@ if is_true "${ARM_REQUIRED}"; then
     if [[ -n "${arm_enable_output}" ]]; then
       echo "${arm_enable_output}" >&2
     fi
-    arm_port_hint="$(read_windows_arm_port_hint || true)"
-    if [[ -n "${arm_port_hint}" ]]; then
-      log_fail "current Windows arm_serial_port config: ${arm_port_hint} (ros2_ws/src/tactile_bringup/config/split_windows_hardware.yaml)"
+    if [[ -n "${VM_ARM_SERIAL_PORT}" ]]; then
+      log_fail "current VM arm_serial_port: ${VM_ARM_SERIAL_PORT}"
     fi
+    print_vm_arm_serial_diagnostics
     exit 1
   fi
 
   if ! wait_for_arm_connected_state "${ARM_TIMEOUT_SEC}"; then
     log_fail "/arm/state is online but connected=true was not observed within ${ARM_TIMEOUT_SEC}s"
-    arm_port_hint="$(read_windows_arm_port_hint || true)"
-    if [[ -n "${arm_port_hint}" ]]; then
-      log_fail "current Windows arm_serial_port config: ${arm_port_hint} (ros2_ws/src/tactile_bringup/config/split_windows_hardware.yaml)"
+    if [[ -n "${VM_ARM_SERIAL_PORT}" ]]; then
+      log_fail "current VM arm_serial_port: ${VM_ARM_SERIAL_PORT}"
     fi
+    print_vm_arm_serial_diagnostics
     echo "[DIAG] latest /arm/state sample:" >&2
     timeout 3s ros2 topic echo /arm/state --once >&2 || true
     exit 1
   fi
 
-  log_ok "STM32/arm bridge is enabled and connected"
+  log_ok "VM STM32/arm bridge is enabled and connected"
 else
   echo "[WARN] ARM_REQUIRED=false, skipping arm chain guard."
 fi
