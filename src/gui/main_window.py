@@ -228,6 +228,10 @@ class MainWindow(QMainWindow):
         self._last_control_panel_device_state = None
         self._last_missing_log_time = 0.0  # ????????????
         self._last_missing_signature = None
+        self._ui_focus_mode = ""
+        self._last_main_button_state = None
+        self._last_system_status_signature = None
+        self._last_arm_panel_status_signature = None
 
         self.init_ui()
         self.init_menu()
@@ -403,6 +407,7 @@ class MainWindow(QMainWindow):
         
         # 添加标签页到右侧布局
         right_layout.addWidget(self.tab_widget)
+        self.tab_widget.currentChanged.connect(self._handle_main_tab_changed)
         
         # 添加右侧部件到分割器
         splitter.addWidget(right_widget)
@@ -953,6 +958,8 @@ class MainWindow(QMainWindow):
 
     def _refresh_live_self_check_status(self) -> None:
         if not self.vision_viewer:
+            return
+        if self.vision_tab is not None and hasattr(self, "tab_widget") and self.tab_widget.currentWidget() is not self.vision_tab:
             return
         frame = self._ros2_vision_latest_frame if self._is_ros2_vision_mode() else (self.camera_capture.get_latest_frame() if self.camera_capture else None)
         if frame is not None:
@@ -2529,6 +2536,98 @@ class MainWindow(QMainWindow):
         self.vision_self_check_timer.timeout.connect(self._refresh_live_self_check_status)
         self.vision_self_check_timer.start(1000)
 
+        self._apply_ui_focus_mode()
+
+    def _is_vision_tab_selected(self) -> bool:
+        if not hasattr(self, "tab_widget") or self.vision_tab is None:
+            return False
+        return self.tab_widget.currentWidget() is self.vision_tab
+
+    def _is_arm_tab_selected(self) -> bool:
+        if not hasattr(self, "tab_widget") or self.arm_tab is None:
+            return False
+        return self.tab_widget.currentWidget() is self.arm_tab
+
+    def _apply_latest_arm_status_to_panel(self, *, force: bool = False) -> None:
+        if not self.arm_status_panel or not isinstance(self._last_arm_state, dict):
+            return
+        signature = (
+            bool(self._last_arm_state.get("connected", False)),
+            bool(self._last_arm_state.get("enabled", False)),
+            bool(self._last_arm_state.get("homed", False)),
+            str(self._last_arm_state.get("safety", "normal")),
+            str(self._last_arm_state.get("control_mode", "joint")),
+            str(self._last_arm_state.get("connection_type", "hardware")),
+            tuple(float(v) for v in list(self._last_arm_state.get("joint_angles") or [])),
+            tuple(float(v) for v in list(self._last_arm_state.get("joint_velocities") or [])),
+            tuple(float(v) for v in list(self._last_arm_state.get("joint_torques") or [])),
+            tuple(float(v) for v in list(self._last_arm_state.get("joint_targets") or [])),
+        )
+        if not force and signature == self._last_arm_panel_status_signature:
+            return
+        self._last_arm_panel_status_signature = signature
+        self.arm_status_panel.update_arm_status(
+            connected=self._last_arm_state.get("connected", False),
+            enabled=self._last_arm_state.get("enabled", False),
+            homed=self._last_arm_state.get("homed", False),
+            safety=self._last_arm_state.get("safety", "normal"),
+            control_mode=self._last_arm_state.get("control_mode", "joint"),
+            connection_type=self._last_arm_state.get("connection_type", "hardware"),
+        )
+        joint_angles = self._last_arm_state.get("joint_angles")
+        if joint_angles:
+            self.arm_status_panel.update_joint_data(
+                joint_angles,
+                velocities=self._last_arm_state.get("joint_velocities"),
+                torques=self._last_arm_state.get("joint_torques"),
+                targets=self._last_arm_state.get("joint_targets"),
+            )
+
+    def _handle_main_tab_changed(self, index: int) -> None:
+        _ = index
+        self._apply_ui_focus_mode()
+        if self._is_vision_tab_selected():
+            self._update_vision_status_widgets(force=True)
+        if self._is_arm_tab_selected():
+            self._apply_latest_arm_status_to_panel(force=True)
+
+    def _apply_ui_focus_mode(self) -> None:
+        vision_focus = self._is_vision_tab_selected()
+        mode = "vision" if vision_focus else "default"
+        if mode == self._ui_focus_mode:
+            return
+        self._ui_focus_mode = mode
+
+        status_interval_ms = 3000 if vision_focus else 1000
+        self.status_timer.start(status_interval_ms)
+        self.vision_self_check_timer.start(5000 if vision_focus else 1000)
+
+        if vision_focus:
+            self.data_update_timer.stop()
+            self.vector_update_timer.stop()
+            self.force_3d_timer.stop()
+        else:
+            if not self.data_update_timer.isActive():
+                self.data_update_timer.start(100)
+            if not self.vector_update_timer.isActive():
+                self.vector_update_timer.start(500)
+            if not self.force_3d_timer.isActive():
+                self.force_3d_timer.start(1000)
+
+        if self.data_acquisition_thread is not None and hasattr(self.data_acquisition_thread, "set_ui_focus_mode"):
+            try:
+                self.data_acquisition_thread.set_ui_focus_mode(mode)
+            except Exception:
+                pass
+
+        if self.arm_status_panel is not None and hasattr(self.arm_status_panel, "set_live_updates_enabled"):
+            try:
+                self.arm_status_panel.set_live_updates_enabled(self._is_arm_tab_selected())
+            except Exception:
+                pass
+        if self._is_arm_tab_selected():
+            self._apply_latest_arm_status_to_panel(force=True)
+
     def calculate_data_rate(self):
         """计算并更新数据率"""
         current_time = time.time()
@@ -2762,8 +2861,9 @@ class MainWindow(QMainWindow):
             status: 控制状态
             info: 控制信息
         """
-        # 更新控制面板
-        self.control_panel.update_control_status(status, info)
+        # ???? arm_state ????????????
+        if status != "arm_state":
+            self.control_panel.update_control_status(status, info)
 
         if status in ("stm32_connect_result", "stm32_disconnect_result"):
             connected = bool(info.get("connected", False))
@@ -2811,29 +2911,18 @@ class MainWindow(QMainWindow):
         # 更新机械臂状态
         if status == "arm_state":
             self._last_arm_state = info
-            self.control_panel.update_device_status(
-                arm={
-                    "connected": info.get("connected", False),
-                    "simulation": info.get("connection_type") == "simulation",
-                }
-            )
-        if status == "arm_state" and self.arm_status_panel:
-            self.arm_status_panel.update_arm_status(
-                connected=info.get("connected", False),
-                enabled=info.get("enabled", False),
-                homed=info.get("homed", False),
-                safety=info.get("safety", "normal"),
-                control_mode=info.get("control_mode", "joint"),
-                connection_type=info.get("connection_type", "hardware")
-            )
-            joint_angles = info.get("joint_angles")
-            if joint_angles:
-                self.arm_status_panel.update_joint_data(
-                    joint_angles,
-                    velocities=info.get("joint_velocities"),
-                    torques=info.get("joint_torques"),
-                    targets=info.get("joint_targets")
-                )
+            arm_device_state = {
+                "connected": info.get("connected", False),
+                "simulation": info.get("connection_type") == "simulation",
+            }
+            merged_state = dict(self._last_control_panel_device_state or {})
+            if merged_state.get("arm") != arm_device_state:
+                self.control_panel.update_device_status(arm=arm_device_state)
+                merged_state["arm"] = arm_device_state
+                self._last_control_panel_device_state = merged_state
+        if status == "arm_state":
+            if self.arm_status_panel and self._is_arm_tab_selected():
+                self._apply_latest_arm_status_to_panel()
             return
         
         # 更新按钮状态
@@ -2936,12 +3025,15 @@ class MainWindow(QMainWindow):
             all_connected = hardware_ready and arm_connected and vision_connected
             any_connected = stm32_connected or tactile_connected or arm_connected or vision_connected
 
-            self.connect_btn.setEnabled(not all_connected)
-            self.disconnect_btn.setEnabled(any_connected)
-            self.calibrate_btn.setEnabled(hardware_ready)
-            self.calibrate_3d_btn.setEnabled(hardware_ready)
-            self.start_demo_btn.setEnabled(hardware_ready)
-            self.start_3d_demo_btn.setEnabled(hardware_ready)
+            main_button_state = (not all_connected, any_connected, hardware_ready)
+            if main_button_state != self._last_main_button_state:
+                self.connect_btn.setEnabled(not all_connected)
+                self.disconnect_btn.setEnabled(any_connected)
+                self.calibrate_btn.setEnabled(hardware_ready)
+                self.calibrate_3d_btn.setEnabled(hardware_ready)
+                self.start_demo_btn.setEnabled(hardware_ready)
+                self.start_3d_demo_btn.setEnabled(hardware_ready)
+                self._last_main_button_state = main_button_state
 
         except Exception as e:
             self.logger.error(f"更新状态显示时出错: {e}")

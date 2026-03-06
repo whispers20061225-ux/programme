@@ -968,17 +968,21 @@ class ArmStatusPanel(QWidget):
         self.num_joints = self._resolve_joint_count()
         self.joint_limits_min, self.joint_limits_max = self._resolve_joint_limits()
 
-        # 真实数据优先，默认允许模拟
-        self.use_simulation_data = True
+        # ????????? UI ?????????????
+        self.use_simulation_data = False
+        self._live_updates_enabled = False
+        self._last_overview_signature = None
         
-        # 初始化UI
+        # ???UI
         self.init_ui()
         
-        # 设置定时器
+        # ???????????????????
         self.update_timer = QTimer()
         self.update_timer.timeout.connect(self.update_display)
-        self.update_timer.start(100)  # 10Hz更新频率
+        self.update_timer.setInterval(250)
         
+        # ???????????
+        self.sim_time = 0.0
         # 模拟数据生成（测试用）
         self.sim_time = 0.0
     
@@ -1173,26 +1177,38 @@ class ArmStatusPanel(QWidget):
         
         layout.addWidget(group)
     
+    def set_live_updates_enabled(self, enabled: bool) -> None:
+        enabled = bool(enabled)
+        if enabled == self._live_updates_enabled:
+            return
+        self._live_updates_enabled = enabled
+        if enabled and self.use_simulation_data:
+            self.update_timer.start()
+        else:
+            self.update_timer.stop()
+
     def update_display(self):
-        """更新显示"""
-        # 未连接时不刷新模拟数据，避免误导
+        """????"""
+        if not self._live_updates_enabled:
+            return
+        # ????????????????
         if not self.arm_connected:
             self.update_status_overview()
             return
 
-        # 生成模拟数据（测试用）
+        # ????????????
         if self.use_simulation_data:
             self.generate_simulated_data()
         
-        # 更新关节状态显示
+        # ????????
         self.update_joint_display()
         
-        # 更新末端执行器显示
+        # ?????????
         self.update_end_effector_display()
         
-        # 更新状态概览
+        # ??????
         self.update_status_overview()
-    
+
     def generate_simulated_data(self):
         """生成模拟数据（测试用）"""
         self.sim_time += 0.1

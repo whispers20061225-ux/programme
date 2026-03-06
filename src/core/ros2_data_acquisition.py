@@ -281,7 +281,9 @@ class Ros2DataAcquisitionThread(QThread):
         self._vision_latest_frame_seq = 0
         self._vision_consumed_frame_seq = 0
         self._vision_error_last_emit_ts: Dict[str, float] = {}
-        self._tactile_ui_emit_interval_sec = 1.0 / 30.0
+        self._ui_focus_mode = "default"
+        self._tactile_ui_emit_interval_sec = 1.0 / 10.0
+        self._status_emit_interval_sec = 2.0
         self._tactile_ui_last_emit_ts = 0.0
 
     def run(self) -> None:
@@ -348,7 +350,7 @@ class Ros2DataAcquisitionThread(QThread):
                     raise exc
 
                 now = time.time()
-                if now - self._status_emit_ts >= 1.0:
+                if now - self._status_emit_ts >= self._status_emit_interval_sec:
                     self._status_emit_ts = now
                     self.status_changed.emit(
                         "running",
@@ -796,6 +798,16 @@ class Ros2DataAcquisitionThread(QThread):
                 "message": message or ("ROS2 camera stream active" if connected else "ROS2 camera stream waiting"),
             }
         self.vision_status.emit(status)
+
+    def set_ui_focus_mode(self, mode: str) -> None:
+        mode_key = str(mode or "default").strip().lower()
+        if mode_key == self._ui_focus_mode:
+            return
+        self._ui_focus_mode = mode_key
+        if mode_key == "vision":
+            self._tactile_ui_emit_interval_sec = 0.2
+        else:
+            self._tactile_ui_emit_interval_sec = 1.0 / 10.0
 
     def start_acquisition(self) -> None:
         if not self.running:
