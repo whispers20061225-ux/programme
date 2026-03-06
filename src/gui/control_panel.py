@@ -8607,7 +8607,6 @@ class ControlPanel(QWidget):
 
 
 
-                cursor.deleteChar()  # 删除换行符
 
 
 
