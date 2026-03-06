@@ -92,9 +92,7 @@ class _Ros2AcquisitionNode(Node):
         self.create_subscription(SystemHealth, health_topic, self._on_health, health_qos)
         if vision_enabled:
             self.get_logger().info(
-                "Vision QoS resolved: requested=%s effective=%s",
-                mode,
-                self._reliability_label(vision_reliability),
+                f"Vision QoS resolved: requested={mode} effective={self._reliability_label(vision_reliability)}"
             )
             self.create_subscription(Image, color_topic, self._on_color, vision_qos)
             self.create_subscription(Image, depth_topic, self._on_depth, vision_qos)
