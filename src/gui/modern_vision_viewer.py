@@ -256,7 +256,6 @@ class VisionViewer(QWidget):
         left_layout = QVBoxLayout(left_widget)
         left_layout.setContentsMargins(0, 0, 0, 0)
         self.image_tabs = QTabWidget()
-        self.image_tabs.currentChanged.connect(self._handle_tab_changed)
 
         self.rgb_view = VideoFrameWidget(mode="rgb")
         self.depth_view = VideoFrameWidget(mode="depth")
@@ -279,7 +278,9 @@ class VisionViewer(QWidget):
         self.pointcloud_ax.set_ylabel("Y")
         self.pointcloud_ax.set_zlabel("Z")
         pointcloud_layout.addWidget(self.pointcloud_canvas)
-        self.image_tabs.addTab(self.pointcloud_tab, "点云")
+        self.image_tabs.addTab(self.pointcloud_tab, "??")
+        self.image_tabs.currentChanged.connect(self._handle_tab_changed)
+
         left_layout.addWidget(self.image_tabs)
 
         controls = QWidget()
@@ -699,6 +700,8 @@ class VisionViewer(QWidget):
         self.pose_view.set_overlay_options(**options)
 
     def _handle_tab_changed(self, index: int) -> None:
+        if not hasattr(self, "pointcloud_tab") or self.pointcloud_tab is None:
+            return
         if self.image_tabs.widget(index) is self.pointcloud_tab:
             self.display_pointcloud()
 

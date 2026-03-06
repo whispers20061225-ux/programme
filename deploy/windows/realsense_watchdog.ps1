@@ -48,36 +48,6 @@ function Read-TextSafe {
     return ([string]$contentObj).Trim()
 }
 
-function Get-TopicListDirect {
-    $oldNativeBehavior = $null
-    $hasNativePref = $false
-    if (Get-Variable -Name PSNativeCommandUseErrorActionPreference -Scope Global -ErrorAction SilentlyContinue) {
-        $hasNativePref = $true
-        $oldNativeBehavior = $Global:PSNativeCommandUseErrorActionPreference
-        $Global:PSNativeCommandUseErrorActionPreference = $false
-    }
-
-    try {
-        $topics = & ros2 topic list 2>$null
-        if ($LASTEXITCODE -ne 0 -or $null -eq $topics) {
-            return @()
-        }
-        return @(
-            @($topics) |
-                ForEach-Object { ([string]$_).Trim() } |
-                Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
-        )
-    }
-    catch {
-        return @()
-    }
-    finally {
-        if ($hasNativePref) {
-            $Global:PSNativeCommandUseErrorActionPreference = $oldNativeBehavior
-        }
-    }
-}
-
 function New-Ros2CommandExpression {
     param([string[]]$Args)
 
@@ -141,15 +111,11 @@ function Invoke-Ros2CommandCapture {
 
 function Get-TopicListSafe {
     param(
-        [int]$CommandTimeoutSec = 6
+        [int]$CommandTimeoutSec = 4
     )
 
-    $topics = Get-TopicListDirect
-    if ($topics.Count -gt 0) {
-        return $topics
-    }
-
-    $result = Invoke-Ros2CommandCapture -Args @("topic", "list") -TimeoutSec $CommandTimeoutSec
+    $timeoutSec = [Math]::Max(1, $CommandTimeoutSec)
+    $result = Invoke-Ros2CommandCapture -Args @("topic", "list") -TimeoutSec $timeoutSec
     if ((-not $result.Exited) -or ($result.ExitCode -ne 0) -or (-not $result.Stdout)) {
         return @()
     }
@@ -161,26 +127,41 @@ function Get-TopicListSafe {
     )
 }
 
+function Test-TopicMatch {
+    param(
+        [string[]]$Topics,
+        [string]$TopicName
+    )
+
+    $topicAlt = $TopicName.TrimStart('/')
+    $topicWithSlash = if ($topicAlt) { "/$topicAlt" } else { $TopicName }
+    return (($Topics -contains $TopicName) -or ($Topics -contains $topicAlt) -or ($Topics -contains $topicWithSlash))
+}
+
 function Wait-Topic {
     param(
         [string]$TopicName,
         [int]$TimeoutSec
     )
 
-    $topicAlt = $TopicName.TrimStart('/')
-    $topicWithSlash = if ($topicAlt) { "/$topicAlt" } else { $TopicName }
     $deadline = (Get-Date).AddSeconds($TimeoutSec)
     while ((Get-Date) -lt $deadline) {
-        $topics = Get-TopicListSafe -CommandTimeoutSec 6
-        if (($topics -contains $TopicName) -or ($topics -contains $topicAlt) -or ($topics -contains $topicWithSlash)) {
+        $remainingSec = [int][Math]::Ceiling(($deadline - (Get-Date)).TotalSeconds)
+        if ($remainingSec -le 0) {
+            break
+        }
+        $commandTimeoutSec = [Math]::Max(1, [Math]::Min(4, $remainingSec))
+        $topics = Get-TopicListSafe -CommandTimeoutSec $commandTimeoutSec
+        if (Test-TopicMatch -Topics $topics -TopicName $TopicName) {
             return $true
         }
-        Start-Sleep -Milliseconds 750
+        Start-Sleep -Milliseconds 500
     }
 
-    $finalTopics = Get-TopicListSafe -CommandTimeoutSec ([Math]::Max(6, [Math]::Min(10, $TimeoutSec)))
-    return (($finalTopics -contains $TopicName) -or ($finalTopics -contains $topicAlt) -or ($finalTopics -contains $topicWithSlash))
+    $finalTopics = Get-TopicListSafe -CommandTimeoutSec ([Math]::Max(1, [Math]::Min(4, $TimeoutSec)))
+    return (Test-TopicMatch -Topics $finalTopics -TopicName $TopicName)
 }
+
 function Wait-MessageOnce {
     param(
         [string]$TopicName,

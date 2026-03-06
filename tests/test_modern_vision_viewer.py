@@ -56,6 +56,24 @@ class ModernVisionViewerTests(unittest.TestCase):
         self.assertFalse(image.isNull())
         self.assertEqual(image.format(), QImage.Format_RGB888)
 
+    def test_viewer_init_defers_pointcloud_tab_signal(self):
+        from PyQt5.QtWidgets import QApplication
+
+        app = QApplication.instance() or QApplication([])
+
+        class DummyConfig:
+            detection_model = "YOLOv5"
+            confidence_threshold = 0.5
+            nms_threshold = 0.45
+
+        viewer = module.VisionViewer(DummyConfig())
+        try:
+            self.assertTrue(hasattr(viewer, "pointcloud_tab"))
+            self.assertIsNotNone(viewer.pointcloud_tab)
+            self.assertGreaterEqual(viewer.image_tabs.count(), 5)
+        finally:
+            viewer.close()
+
 
 if __name__ == "__main__":
     unittest.main()
