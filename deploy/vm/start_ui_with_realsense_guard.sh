@@ -350,6 +350,19 @@ dump_runtime_diagnostics() {
   tail -n 120 "${LAUNCH_LOG_FILE}" 2>/dev/null || true
 }
 
+cleanup_stale_vm_processes() {
+  pkill -f "split_vm_app.launch.py" >/dev/null 2>&1 || true
+  pkill -f "latest_frame_relay_node" >/dev/null 2>&1 || true
+  pkill -f "realsense_monitor_node" >/dev/null 2>&1 || true
+  pkill -f "arm_driver_node" >/dev/null 2>&1 || true
+  pkill -f "arm_control_node" >/dev/null 2>&1 || true
+  pkill -f "demo_task_node" >/dev/null 2>&1 || true
+  pkill -f "tactile_ui_subscriber" >/dev/null 2>&1 || true
+  pkill -f "tactile_sensor_node" >/dev/null 2>&1 || true
+  ros2 daemon stop >/dev/null 2>&1 || true
+  sleep 1
+}
+
 cleanup() {
   if [[ -n "${LAUNCH_PID:-}" ]] && kill -0 "${LAUNCH_PID}" 2>/dev/null; then
     if [[ "${KEEP_LAUNCH}" == "true" ]]; then
@@ -366,6 +379,9 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 cd "${PROJECT_ROOT}"
+
+log_step "cleaning stale VM ROS2 processes before camera validation"
+cleanup_stale_vm_processes
 
 log_step "validating Windows -> VM RealSense link"
 bash "${SCRIPT_DIR}/test_realsense_stream.sh" \
@@ -432,11 +448,7 @@ echo "[INFO] vision profile=${VISION_PROFILE} relay=${USE_RELAY_TOPICS} monitor=
 echo "[INFO] UI vision limits: max_fps=${VISION_UI_MAX_FPS} stale_timeout_sec=${VISION_UI_STALE_TIMEOUT_SEC} qos=${VISION_QOS_MODE}"
 
 log_step "cleaning stale VM ROS2 processes"
-pkill -f "split_vm_app.launch.py" >/dev/null 2>&1 || true
-pkill -f "latest_frame_relay_node" >/dev/null 2>&1 || true
-pkill -f "realsense_monitor_node" >/dev/null 2>&1 || true
-pkill -f "arm_driver_node" >/dev/null 2>&1 || true
-sleep 1
+cleanup_stale_vm_processes
 
 mkdir -p "${LAUNCH_LOG_DIR}"
 log_step "starting split_vm_app.launch.py in background"

@@ -15,9 +15,8 @@ PYTHON_CMD=""
 VM_ROS_PYTHON_ENV="${VM_ROS_PYTHON:-}"
 # shellcheck disable=SC1091
 source "${SCRIPT_DIR}/env_ros2_vm.sh" "${DOMAIN_ID}"
-# refresh graph cache before camera checks
+# stop daemon before probe to free one DDS participant slot
 ros2 daemon stop >/dev/null 2>&1 || true
-ros2 daemon start >/dev/null 2>&1 || true
 
 COLOR_TOPIC="/camera/camera/color/image_raw"
 DEPTH_TOPIC="/camera/camera/aligned_depth_to_color/image_raw"
@@ -108,36 +107,13 @@ run_realsense_probe() {
   "$(get_python_cmd)" "${PROBE_SCRIPT}"     --color-topic "${COLOR_TOPIC}"     --depth-topic "${DEPTH_TOPIC}"     --info-topic "${INFO_TOPIC}"     --first-timeout-sec "$1"     --sample-sec "$2"
 }
 
-wait_for_topic() {
-  local topic="$1"
-  local timeout_sec="$2"
-  local elapsed=0
-  while (( elapsed < timeout_sec )); do
-    local topics
-    topics="$(ros2 topic list 2>/dev/null || true)"
-    if echo "${topics}" | grep -Fxq "${topic}"; then
-      echo "[OK] topic discovered: ${topic}"
-      return 0
-    fi
-    sleep 1
-    elapsed=$((elapsed + 1))
-  done
-  echo "[FAIL] topic not discovered within ${timeout_sec}s: ${topic}" >&2
-  return 1
-}
-
 check_rate() {
   local rate="$1"
   local minimum="$2"
   awk -v r="${rate}" -v m="${minimum}" 'BEGIN { exit ((r + 0.0 >= m + 0.0) ? 0 : 1) }'
 }
 
-echo "[INFO] checking RealSense topics from VM..."
-wait_for_topic "${COLOR_TOPIC}" "${TOPIC_TIMEOUT_SEC}"
-wait_for_topic "${DEPTH_TOPIC}" "${TOPIC_TIMEOUT_SEC}"
-wait_for_topic "${INFO_TOPIC}" "${TOPIC_TIMEOUT_SEC}"
-
-echo "[INFO] probing first camera messages and sampling hz (${HZ_SAMPLE_SEC}s)..."
+echo "[INFO] probing RealSense topics and sampling hz (${HZ_SAMPLE_SEC}s)..."
 set +e
 probe_output="$(run_realsense_probe "${TOPIC_TIMEOUT_SEC}" "${HZ_SAMPLE_SEC}" 2>&1)"
 probe_rc=$?
