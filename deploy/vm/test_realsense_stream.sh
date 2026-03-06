@@ -24,7 +24,9 @@ wait_for_topic() {
   local timeout_sec="$2"
   local elapsed=0
   while (( elapsed < timeout_sec )); do
-    if ros2 topic list | grep -Fxq "${topic}"; then
+    local topics
+    topics="$(ros2 topic list 2>/dev/null || true)"
+    if echo "${topics}" | grep -Fxq "${topic}"; then
       echo "[OK] topic discovered: ${topic}"
       return 0
     fi

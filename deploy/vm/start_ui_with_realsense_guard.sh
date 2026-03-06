@@ -91,7 +91,9 @@ wait_for_service() {
   local timeout_sec="$2"
   local elapsed=0
   while (( elapsed < timeout_sec )); do
-    if ros2 service list | grep -Fxq "${service}"; then
+    local services
+    services="$(ros2 service list 2>/dev/null || true)"
+    if echo "${services}" | grep -Fxq "${service}"; then
       return 0
     fi
     sleep 1
