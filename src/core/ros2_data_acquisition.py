@@ -16,7 +16,10 @@ try:
     import rclpy
     from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
     from rclpy.executors import ExternalShutdownException, MultiThreadedExecutor, SingleThreadedExecutor
-    from rclpy.exceptions import RCLError
+    try:
+        from rclpy.exceptions import RCLError
+    except Exception:
+        RCLError = Exception
     from rclpy.node import Node
     from rclpy.qos import HistoryPolicy, QoSProfile, ReliabilityPolicy
     from sensor_msgs.msg import CameraInfo, Image
