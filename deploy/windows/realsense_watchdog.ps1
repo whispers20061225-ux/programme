@@ -190,11 +190,12 @@ function Get-TopicAverageHz {
     $outFile = Join-Path $env:TEMP ("programme_hz_" + [guid]::NewGuid().ToString() + ".out.log")
     $errFile = Join-Path $env:TEMP ("programme_hz_" + [guid]::NewGuid().ToString() + ".err.log")
     try {
-        $proc = Start-Process -FilePath ros2 -ArgumentList @("topic", "hz", $TopicName) -PassThru -RedirectStandardOutput $outFile -RedirectStandardError $errFile -WindowStyle Hidden
+        $proc = Start-Ros2CommandProcess -Args @("topic", "hz", $TopicName) -StdoutPath $outFile -StderrPath $errFile
         Start-Sleep -Seconds $SampleSec
         if (-not $proc.HasExited) {
             Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
         }
+        $proc.WaitForExit(2000) | Out-Null
 
         $raw = ""
         if (Test-Path $outFile) { $raw += (Get-Content -Raw $outFile) + "`n" }

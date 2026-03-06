@@ -202,7 +202,7 @@ class Ros2DataAcquisitionThread(QThread):
         depth_topic: str = "/camera/camera/aligned_depth_to_color/image_raw",
         camera_info_topic: str = "/camera/camera/color/camera_info",
         vision_stale_timeout_sec: float = 1.5,
-        vision_max_fps: float = 15.0,
+        vision_max_fps: float = 30.0,
         vision_emit_signal: bool = False,
         vision_error_log_interval_sec: float = 2.0,
         vision_qos_mode: str = "auto",

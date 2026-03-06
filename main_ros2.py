@@ -103,7 +103,7 @@ class Ros2PhaseApp:
         vision_depth_topic: str = "/camera/camera/aligned_depth_to_color/image_raw",
         vision_camera_info_topic: str = "/camera/camera/color/camera_info",
         vision_stale_timeout_sec: float = 1.5,
-        vision_max_fps: float = 15.0,
+        vision_max_fps: float = 30.0,
         vision_qos_mode: str = "auto",
         control_mode: str = "ros2",
         command_timeout_sec: float = 5.0,
@@ -344,7 +344,7 @@ def main() -> None:
     parser.add_argument(
         "--vision-max-fps",
         type=float,
-        default=15.0,
+        default=30.0,
         help="Max FPS pushed from ROS2 image stream to UI",
     )
     parser.add_argument(

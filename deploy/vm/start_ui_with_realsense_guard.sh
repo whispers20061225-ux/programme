@@ -13,7 +13,7 @@ MIN_TACTILE_HZ="${9:-3.0}"
 ARM_REQUIRED="${10:-true}"
 VISION_PROFILE_RAW="${11:-minimal}"
 KEEP_LAUNCH="${KEEP_LAUNCH:-false}"
-VISION_UI_MAX_FPS="${VISION_UI_MAX_FPS:-20.0}"
+VISION_UI_MAX_FPS="${VISION_UI_MAX_FPS:-30.0}"
 VISION_UI_STALE_TIMEOUT_SEC="${VISION_UI_STALE_TIMEOUT_SEC:-3.0}"
 VISION_QOS_MODE="${VISION_QOS_MODE:-auto}"
 USE_LATEST_FRAME_RELAY_ENV="${USE_LATEST_FRAME_RELAY:-}"
@@ -161,13 +161,6 @@ ensure_param_file_copy() {
   fi
   PARAM_FILE_PATH="$(mktemp)"
   cp "${BASE_PARAM_FILE}" "${PARAM_FILE_PATH}"
-}
-
-configure_vm_arm_serial_port() {
-  local serial_port="$1"
-  local escaped_port="${serial_port//&/\&}"
-  ensure_param_file_copy
-  sed -i -E "0,/arm_serial_port:[[:space:]]*.*$/s#arm_serial_port:[[:space:]]*.*#    arm_serial_port: \"${escaped_port}\"#" "${PARAM_FILE_PATH}"
 }
 
 print_vm_arm_serial_diagnostics() {
@@ -397,7 +390,6 @@ if is_true "${ARM_REQUIRED}"; then
     exit 1
   fi
   log_ok "VM STM32 serial detected: ${VM_ARM_SERIAL_PORT}"
-  configure_vm_arm_serial_port "${VM_ARM_SERIAL_PORT}"
 fi
 
 if [[ "${USE_RELAY_TOPICS}" == "true" ]] && ! has_ros_package "tactile_vision_cpp"; then
@@ -451,6 +443,7 @@ log_step "starting split_vm_app.launch.py in background"
 launch_args=("start_tactile_sensor:=${START_TACTILE_SENSOR}")
 if is_true "${ARM_REQUIRED}"; then
   launch_args+=("start_arm_driver:=true")
+  launch_args+=("arm_serial_port:=${VM_ARM_SERIAL_PORT}")
 else
   launch_args+=("start_arm_driver:=false")
 fi

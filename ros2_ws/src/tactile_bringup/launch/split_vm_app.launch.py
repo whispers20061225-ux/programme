@@ -26,6 +26,11 @@ def generate_launch_description() -> LaunchDescription:
         default_value="false",
         description="Whether to launch tactile_hardware arm_driver_node on VM side",
     )
+    arm_serial_port_arg = DeclareLaunchArgument(
+        "arm_serial_port",
+        default_value="/dev/serial/by-id/usb-STMicroelectronics_STM32_Virtual_ComPort_6D7F24505157-if00",
+        description="Serial port passed to arm_driver_node when running on VM",
+    )
     start_latest_frame_relay_arg = DeclareLaunchArgument(
         "start_latest_frame_relay",
         default_value="true",
@@ -40,6 +45,7 @@ def generate_launch_description() -> LaunchDescription:
     param_file = LaunchConfiguration("param_file")
     start_tactile_sensor = LaunchConfiguration("start_tactile_sensor")
     start_arm_driver = LaunchConfiguration("start_arm_driver")
+    arm_serial_port = LaunchConfiguration("arm_serial_port")
     start_latest_frame_relay = LaunchConfiguration("start_latest_frame_relay")
     start_realsense_monitor = LaunchConfiguration("start_realsense_monitor")
 
@@ -57,7 +63,7 @@ def generate_launch_description() -> LaunchDescription:
         executable="arm_driver_node",
         name="arm_driver_node",
         output="screen",
-        parameters=[param_file],
+        parameters=[param_file, {"arm_serial_port": arm_serial_port}],
         condition=IfCondition(start_arm_driver),
     )
 
@@ -108,6 +114,7 @@ def generate_launch_description() -> LaunchDescription:
             param_file_arg,
             start_tactile_sensor_arg,
             start_arm_driver_arg,
+            arm_serial_port_arg,
             start_latest_frame_relay_arg,
             start_realsense_monitor_arg,
             tactile_sensor_node,
