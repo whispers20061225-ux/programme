@@ -28,23 +28,60 @@ function Write-Ok([string]$msg) { Write-Host "[OK] $msg" -ForegroundColor Green 
 function Write-WarnMsg([string]$msg) { Write-Host "[WARN] $msg" -ForegroundColor Yellow }
 function Write-Fail([string]$msg) { Write-Host "[FAIL] $msg" -ForegroundColor Red }
 
+function Get-TopicListSafe {
+    param(
+        [int]$CommandTimeoutSec = 3
+    )
+
+    $outFile = Join-Path $env:TEMP ("programme_topic_list_" + [guid]::NewGuid().ToString() + ".out.log")
+    $errFile = Join-Path $env:TEMP ("programme_topic_list_" + [guid]::NewGuid().ToString() + ".err.log")
+    try {
+        $proc = Start-Process -FilePath ros2 -ArgumentList @("topic", "list") -PassThru -RedirectStandardOutput $outFile -RedirectStandardError $errFile -WindowStyle Hidden
+        $exited = $proc.WaitForExit($CommandTimeoutSec * 1000)
+        if (-not $exited) {
+            Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
+            return @()
+        }
+        if ($proc.ExitCode -ne 0) {
+            return @()
+        }
+
+        $lines = Get-Content -Path $outFile -ErrorAction SilentlyContinue
+        if ($null -eq $lines) {
+            return @()
+        }
+        return @(
+            $lines |
+                ForEach-Object { ([string]$_).Trim() } |
+                Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+        )
+    }
+    catch {
+        return @()
+    }
+    finally {
+        Remove-Item $outFile, $errFile -Force -ErrorAction SilentlyContinue
+    }
+}
+
 function Wait-Topic {
     param(
         [string]$TopicName,
         [int]$TimeoutSec
     )
 
+    $topicAlt = $TopicName.TrimStart('/')
+    $topicWithSlash = if ($topicAlt) { "/$topicAlt" } else { $TopicName }
     $deadline = (Get-Date).AddSeconds($TimeoutSec)
     while ((Get-Date) -lt $deadline) {
-        $topics = & ros2 topic list 2>$null
-        if ($LASTEXITCODE -eq 0 -and ($topics -contains $TopicName)) {
+        $topics = Get-TopicListSafe -CommandTimeoutSec 3
+        if (($topics -contains $TopicName) -or ($topics -contains $topicAlt) -or ($topics -contains $topicWithSlash)) {
             return $true
         }
         Start-Sleep -Milliseconds 500
     }
     return $false
 }
-
 function Get-TopicAverageHz {
     param(
         [string]$TopicName,
@@ -109,11 +146,12 @@ function New-RealsenseNodeArgs {
         "-p", "depth_width:=$DepthWidth",
         "-p", "depth_height:=$DepthHeight",
         "-p", "depth_fps:=$DepthFps",
-        "-p", "frame_timeout_ms:=500",
-        "-p", "max_consecutive_timeouts:=20",
-        "-p", "restart_cooldown_sec:=2.0",
-        "-p", "capture_stale_sec:=3.0",
-        "-p", "publish_only_when_new_frame:=true"
+        "-p", "frame_timeout_ms:=300",
+        "-p", "max_consecutive_timeouts:=8",
+        "-p", "restart_cooldown_sec:=1.5",
+        "-p", "capture_stale_sec:=1.5",
+        "-p", "publish_only_when_new_frame:=true",
+        "-p", "use_reliable_qos:=true"
     )
     if ($RealsenseSerial) {
         $args += @("-p", "serial_no:=$RealsenseSerial")

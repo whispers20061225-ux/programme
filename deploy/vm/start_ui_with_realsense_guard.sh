@@ -15,6 +15,7 @@ VISION_PROFILE_RAW="${11:-minimal}"
 KEEP_LAUNCH="${KEEP_LAUNCH:-false}"
 VISION_UI_MAX_FPS="${VISION_UI_MAX_FPS:-20.0}"
 VISION_UI_STALE_TIMEOUT_SEC="${VISION_UI_STALE_TIMEOUT_SEC:-3.0}"
+VISION_QOS_MODE="${VISION_QOS_MODE:-auto}"
 USE_LATEST_FRAME_RELAY_ENV="${USE_LATEST_FRAME_RELAY:-}"
 START_REALSENSE_MONITOR_ENV="${START_REALSENSE_MONITOR:-}"
 
@@ -84,6 +85,14 @@ if [[ "${USE_RELAY_TOPICS}" == "true" ]]; then
   VISION_COLOR_TOPIC="/camera/relay/color/image_raw"
   VISION_DEPTH_TOPIC="/camera/relay/aligned_depth_to_color/image_raw"
   VISION_CAMERA_INFO_TOPIC="/camera/relay/color/camera_info"
+fi
+
+if [[ "${VISION_QOS_MODE}" == "auto" ]]; then
+  if [[ "${USE_RELAY_TOPICS}" == "true" ]]; then
+    VISION_QOS_MODE="best_effort"
+  else
+    VISION_QOS_MODE="reliable"
+  fi
 fi
 
 wait_for_topic() {
@@ -285,7 +294,7 @@ else
 fi
 
 echo "[INFO] vision profile=${VISION_PROFILE} relay=${USE_RELAY_TOPICS} monitor=${ENABLE_REALSENSE_MONITOR}"
-echo "[INFO] UI vision limits: max_fps=${VISION_UI_MAX_FPS} stale_timeout_sec=${VISION_UI_STALE_TIMEOUT_SEC}"
+echo "[INFO] UI vision limits: max_fps=${VISION_UI_MAX_FPS} stale_timeout_sec=${VISION_UI_STALE_TIMEOUT_SEC} qos=${VISION_QOS_MODE}"
 
 log_step "cleaning stale VM ROS2 processes"
 pkill -f "split_vm_app.launch.py" >/dev/null 2>&1 || true
@@ -438,4 +447,5 @@ python "${PROJECT_ROOT}/main_ros2.py" \
   --vision-camera-info-topic "${VISION_CAMERA_INFO_TOPIC}" \
   --vision-max-fps "${VISION_UI_MAX_FPS}" \
   --vision-stale-timeout-sec "${VISION_UI_STALE_TIMEOUT_SEC}" \
+  --vision-qos-mode "${VISION_QOS_MODE}" \
   --log-level INFO

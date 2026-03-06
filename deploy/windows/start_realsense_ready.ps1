@@ -48,42 +48,60 @@ function Read-TextSafe {
     return ([string]$contentObj).Trim()
 }
 
+function Get-TopicListSafe {
+    param(
+        [int]$CommandTimeoutSec = 3
+    )
+
+    $outFile = Join-Path $env:TEMP ("programme_topic_list_" + [guid]::NewGuid().ToString() + ".out.log")
+    $errFile = Join-Path $env:TEMP ("programme_topic_list_" + [guid]::NewGuid().ToString() + ".err.log")
+    try {
+        $proc = Start-Process -FilePath ros2 -ArgumentList @("topic", "list") -PassThru -RedirectStandardOutput $outFile -RedirectStandardError $errFile -WindowStyle Hidden
+        $exited = $proc.WaitForExit($CommandTimeoutSec * 1000)
+        if (-not $exited) {
+            Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
+            return @()
+        }
+        if ($proc.ExitCode -ne 0) {
+            return @()
+        }
+
+        $lines = Get-Content -Path $outFile -ErrorAction SilentlyContinue
+        if ($null -eq $lines) {
+            return @()
+        }
+        return @(
+            $lines |
+                ForEach-Object { ([string]$_).Trim() } |
+                Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+        )
+    }
+    catch {
+        return @()
+    }
+    finally {
+        Remove-Item $outFile, $errFile -Force -ErrorAction SilentlyContinue
+    }
+}
+
 function Wait-Topic {
     param(
         [string]$TopicName,
         [int]$TimeoutSec
     )
 
+    $topicAlt = $TopicName.TrimStart('/')
+    $topicWithSlash = if ($topicAlt) { "/$topicAlt" } else { $TopicName }
     $deadline = (Get-Date).AddSeconds($TimeoutSec)
     while ((Get-Date) -lt $deadline) {
-        $topics = @()
-        $oldNativeBehavior = $null
-        $hasNativePref = $false
-        if (Get-Variable -Name PSNativeCommandUseErrorActionPreference -Scope Global -ErrorAction SilentlyContinue) {
-            $hasNativePref = $true
-            $oldNativeBehavior = $Global:PSNativeCommandUseErrorActionPreference
-            $Global:PSNativeCommandUseErrorActionPreference = $false
-        }
-        try {
-            $topics = & ros2 topic list 2>$null
-        }
-        catch {
-            $topics = @()
-        }
-        finally {
-            if ($hasNativePref) {
-                $Global:PSNativeCommandUseErrorActionPreference = $oldNativeBehavior
-            }
-        }
-
-        if ($LASTEXITCODE -eq 0 -and ($topics -contains $TopicName)) {
+        $topics = Get-TopicListSafe -CommandTimeoutSec 3
+        if (($topics -contains $TopicName) -or ($topics -contains $topicAlt) -or ($topics -contains $topicWithSlash)) {
             return $true
         }
         Start-Sleep -Seconds 1
     }
     return $false
 }
-
 function Wait-MessageOnce {
     param(
         [string]$TopicName,

@@ -59,6 +59,7 @@ class _Ros2AcquisitionNode(Node):
         color_topic: str,
         depth_topic: str,
         camera_info_topic: str,
+        vision_qos_mode: str,
     ):
         super().__init__("ros2_tactile_acquisition")
         self._owner = owner
@@ -68,9 +69,18 @@ class _Ros2AcquisitionNode(Node):
             history=HistoryPolicy.KEEP_LAST,
             depth=20,
         )
+        mode = str(vision_qos_mode or "auto").strip().lower()
+        if mode == "reliable":
+            vision_reliability = ReliabilityPolicy.RELIABLE
+        elif mode == "best_effort":
+            vision_reliability = ReliabilityPolicy.BEST_EFFORT
+        else:
+            # Raw Windows->VM stream benefits from reliable QoS; relay path keeps best-effort latency profile.
+            is_relay_topic = "/camera/relay/" in str(color_topic)
+            vision_reliability = ReliabilityPolicy.BEST_EFFORT if is_relay_topic else ReliabilityPolicy.RELIABLE
         # Vision path only needs newest frame; keep queue depth=1 to reduce backlog/latency.
         vision_qos = QoSProfile(
-            reliability=ReliabilityPolicy.BEST_EFFORT,
+            reliability=vision_reliability,
             history=HistoryPolicy.KEEP_LAST,
             depth=1,
         )
@@ -126,6 +136,7 @@ class Ros2DataAcquisitionThread(QThread):
         vision_max_fps: float = 15.0,
         vision_emit_signal: bool = False,
         vision_error_log_interval_sec: float = 2.0,
+        vision_qos_mode: str = "auto",
     ):
         super().__init__()
         self.config = config
@@ -140,6 +151,7 @@ class Ros2DataAcquisitionThread(QThread):
         self.vision_max_fps = max(1.0, float(vision_max_fps))
         self.vision_emit_signal = bool(vision_emit_signal)
         self.vision_error_log_interval_sec = max(0.2, float(vision_error_log_interval_sec))
+        self.vision_qos_mode = str(vision_qos_mode or "auto").strip().lower()
 
         self.running = False
         self.paused = False
@@ -209,6 +221,7 @@ class Ros2DataAcquisitionThread(QThread):
                 color_topic=self.color_topic,
                 depth_topic=self.depth_topic,
                 camera_info_topic=self.camera_info_topic,
+                vision_qos_mode=self.vision_qos_mode,
             )
             self._executor = SingleThreadedExecutor()
             self._executor.add_node(self._node)

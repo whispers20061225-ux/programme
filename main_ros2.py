@@ -104,6 +104,7 @@ class Ros2PhaseApp:
         vision_camera_info_topic: str = "/camera/camera/color/camera_info",
         vision_stale_timeout_sec: float = 1.5,
         vision_max_fps: float = 15.0,
+        vision_qos_mode: str = "auto",
         control_mode: str = "ros2",
         command_timeout_sec: float = 5.0,
     ):
@@ -119,6 +120,7 @@ class Ros2PhaseApp:
         self.vision_camera_info_topic = vision_camera_info_topic
         self.vision_stale_timeout_sec = vision_stale_timeout_sec
         self.vision_max_fps = vision_max_fps
+        self.vision_qos_mode = str(vision_qos_mode or "auto").strip().lower()
         self.control_mode = control_mode
         self.command_timeout_sec = command_timeout_sec
 
@@ -169,6 +171,7 @@ class Ros2PhaseApp:
                 vision_stale_timeout_sec=self.vision_stale_timeout_sec,
                 vision_max_fps=self.vision_max_fps,
                 vision_emit_signal=False,
+                vision_qos_mode=self.vision_qos_mode,
             )
 
             if self.control_mode == "stub":
@@ -345,6 +348,13 @@ def main() -> None:
         help="Max FPS pushed from ROS2 image stream to UI",
     )
     parser.add_argument(
+        "--vision-qos-mode",
+        type=str,
+        default="auto",
+        choices=["auto", "best_effort", "reliable"],
+        help="ROS2 QoS profile for vision subscriptions",
+    )
+    parser.add_argument(
         "--control-mode",
         type=str,
         default="ros2",
@@ -384,6 +394,7 @@ def main() -> None:
         vision_camera_info_topic=args.vision_camera_info_topic,
         vision_stale_timeout_sec=args.vision_stale_timeout_sec,
         vision_max_fps=args.vision_max_fps,
+        vision_qos_mode=args.vision_qos_mode,
         control_mode=args.control_mode,
         command_timeout_sec=args.command_timeout_sec,
     )

@@ -140,11 +140,12 @@ if ($StartRealsense) {
             "-p depth_width:=$DepthWidth",
             "-p depth_height:=$DepthHeight",
             "-p depth_fps:=$DepthFps",
-            "-p frame_timeout_ms:=500",
-            "-p max_consecutive_timeouts:=20",
-            "-p restart_cooldown_sec:=2.0",
-            "-p capture_stale_sec:=3.0",
+            "-p frame_timeout_ms:=300",
+            "-p max_consecutive_timeouts:=8",
+            "-p restart_cooldown_sec:=1.5",
+            "-p capture_stale_sec:=1.5",
             "-p publish_only_when_new_frame:=true"
+            "-p use_reliable_qos:=true"
         )
         if ($RealsenseSerial) {
             $realsenseArgs += "-p serial_no:=$RealsenseSerial"

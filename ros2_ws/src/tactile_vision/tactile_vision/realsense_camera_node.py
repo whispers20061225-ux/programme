@@ -50,6 +50,7 @@ class RealsenseCameraNode(Node):
         self.declare_parameter("restart_cooldown_sec", 5.0)
         self.declare_parameter("capture_stale_sec", 3.0)
         self.declare_parameter("publish_only_when_new_frame", True)
+        self.declare_parameter("use_reliable_qos", True)
 
         raw_serial = str(self.get_parameter("serial_no").value).strip()
         self.serial_no = raw_serial[1:] if raw_serial.startswith("_") else raw_serial
@@ -72,11 +73,12 @@ class RealsenseCameraNode(Node):
         self.restart_cooldown_sec = max(1.0, float(self.get_parameter("restart_cooldown_sec").value))
         self.capture_stale_sec = max(1.0, float(self.get_parameter("capture_stale_sec").value))
         self.publish_only_when_new_frame = bool(self.get_parameter("publish_only_when_new_frame").value)
+        self.use_reliable_qos = bool(self.get_parameter("use_reliable_qos").value)
 
         qos_sensor = QoSProfile(
             history=HistoryPolicy.KEEP_LAST,
             depth=1,
-            reliability=ReliabilityPolicy.BEST_EFFORT,
+            reliability=(ReliabilityPolicy.RELIABLE if self.use_reliable_qos else ReliabilityPolicy.BEST_EFFORT),
         )
 
         self.color_pub = self.create_publisher(Image, self.color_topic, qos_sensor)
@@ -113,7 +115,7 @@ class RealsenseCameraNode(Node):
             f"serial={self.serial_no or 'auto'}, color={self.enable_color}, depth={self.enable_depth}, "
             f"align_depth={self.align_depth}, color_topic={self.color_topic}, depth_topic={self.depth_topic}, "
             f"frame_timeout_ms={self.frame_timeout_ms}, max_consecutive_timeouts={self.max_consecutive_timeouts}, "
-            f"capture_stale_sec={self.capture_stale_sec}"
+            f"capture_stale_sec={self.capture_stale_sec}, qos={'reliable' if self.use_reliable_qos else 'best_effort'}"
         )
 
     def _build_config(self) -> "rs.config":
