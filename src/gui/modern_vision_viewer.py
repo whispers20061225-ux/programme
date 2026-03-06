@@ -39,6 +39,64 @@ from utils.transformations import rotation_matrix_to_euler
 _DEPTH_FALLBACK_MAX_METERS = 5.0
 
 
+def colorize_depth_for_display(depth: Optional[np.ndarray]) -> Optional[np.ndarray]:
+    if depth is None:
+        return None
+    arr = np.asarray(depth)
+    if arr.ndim == 3 and arr.shape[2] == 3:
+        if arr.dtype != np.uint8:
+            arr = np.clip(arr, 0, 255).astype(np.uint8)
+        return np.require(arr, requirements=["C"])
+    if arr.ndim == 3:
+        arr = arr[:, :, 0]
+    if arr.ndim != 2:
+        return None
+
+    arrf = arr.astype(np.float32, copy=False)
+    if arr.dtype == np.uint16:
+        valid = arrf > 0.0
+        arrf = arrf / 1000.0
+    else:
+        valid = np.isfinite(arrf) & (arrf > 0.0)
+
+    if not np.any(valid):
+        return np.zeros(arr.shape + (3,), dtype=np.uint8)
+
+    valid_values = arrf[valid]
+    near = float(np.percentile(valid_values, 5.0))
+    far = float(np.percentile(valid_values, 95.0))
+    if not np.isfinite(near):
+        near = 0.1
+    if not np.isfinite(far):
+        far = near + 1.0
+    near = max(0.05, near)
+    far = max(near + 0.1, far)
+
+    norm = np.zeros_like(arrf, dtype=np.float32)
+    norm[valid] = np.clip((arrf[valid] - near) / (far - near), 0.0, 1.0)
+    norm = 1.0 - norm
+
+    anchors = np.array([0.0, 0.25, 0.5, 0.75, 1.0], dtype=np.float32)
+    colors = np.array(
+        [
+            [0, 32, 128],
+            [0, 128, 255],
+            [0, 255, 255],
+            [255, 255, 0],
+            [255, 96, 0],
+        ],
+        dtype=np.float32,
+    )
+
+    flat = norm.reshape(-1)
+    rgb = np.empty((flat.size, 3), dtype=np.uint8)
+    for channel in range(3):
+        rgb[:, channel] = np.interp(flat, anchors, colors[:, channel]).astype(np.uint8)
+    rgb = rgb.reshape(arr.shape + (3,))
+    rgb[~valid] = 0
+    return np.require(rgb, requirements=["C"])
+
+
 def rgb_array_to_qimage(image: Optional[np.ndarray]) -> Optional[QImage]:
     if image is None:
         return None
@@ -56,19 +114,15 @@ def depth_array_to_qimage(depth: Optional[np.ndarray]) -> Optional[QImage]:
     if depth is None:
         return None
     arr = np.asarray(depth)
+    if arr.ndim == 3 and arr.shape[2] == 3:
+        return rgb_array_to_qimage(arr)
     if arr.ndim == 3:
         arr = arr[:, :, 0]
     if arr.ndim != 2:
         return None
-    if arr.dtype == np.uint16:
-        arr16 = np.require(arr, requirements=["C"])
-        height, width = arr16.shape
-        return QImage(arr16.data, width, height, arr16.strides[0], QImage.Format_Grayscale16).copy()
-    if np.issubdtype(arr.dtype, np.floating):
-        clipped = np.clip(arr.astype(np.float32), 0.0, _DEPTH_FALLBACK_MAX_METERS)
-        arr16 = np.require(((clipped / _DEPTH_FALLBACK_MAX_METERS) * 65535.0).astype(np.uint16), requirements=["C"])
-        height, width = arr16.shape
-        return QImage(arr16.data, width, height, arr16.strides[0], QImage.Format_Grayscale16).copy()
+    colorized = colorize_depth_for_display(arr)
+    if colorized is not None:
+        return rgb_array_to_qimage(colorized)
     if arr.dtype != np.uint8:
         arr = np.clip(arr, 0, 255).astype(np.uint8)
     arr8 = np.require(arr, requirements=["C"])

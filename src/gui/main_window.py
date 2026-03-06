@@ -60,7 +60,7 @@ from gui.plot_widget import (
     ForcePlotWidget,
     TactileSurfaceWidget,  # 新增：触觉曲面显示
 )
-from gui.modern_vision_viewer import VisionViewer
+from gui.modern_vision_viewer import VisionViewer, colorize_depth_for_display
 from gui.simulation_viewer import SimulationViewer
 from gui.arm_status_panel import ArmStatusPanel
 from gui.dialogs import (
@@ -203,8 +203,11 @@ class MainWindow(QMainWindow):
         self._ros2_vision_stall_started_at = 0.0
         self._ros2_vision_last_upstream_frame_wall_ts = 0.0
         self._analysis_worker = LatestTaskWorker("vision-analysis", self._run_analysis_task)
+        self._depth_visual_worker = LatestTaskWorker("depth-visual", self._run_depth_visual_task)
         self._pointcloud_worker = LatestTaskWorker("pointcloud", self._run_pointcloud_task)
         self._analysis_result_overwrite_total = 0
+        self._depth_visual_last_task_ts = 0.0
+        self._depth_visual_result_overwrite_total = 0
         self._pointcloud_result_overwrite_total = 0
         self._pointcloud_schedule_interval_sec = 0.5
         self._pointcloud_last_schedule_ts = 0.0
@@ -229,6 +232,7 @@ class MainWindow(QMainWindow):
         # ????
         self.logger = logging.getLogger(__name__)
         self._analysis_worker.start()
+        self._depth_visual_worker.start()
         self._pointcloud_worker.start()
 
         self.logger.info("???????????")
@@ -535,6 +539,8 @@ class MainWindow(QMainWindow):
             self._ros2_vision_last_frame_age_ms = None
             self._ros2_vision_queue_overwrite_total = 0
             self._pointcloud_refresh_requested = False
+            self._depth_visual_last_task_ts = 0.0
+            self._depth_visual_result_overwrite_total = 0
             self._manual_detection_requested = False
             with self._ros2_vision_pending_lock:
                 self._ros2_vision_pending_frame = None
@@ -614,8 +620,9 @@ class MainWindow(QMainWindow):
         if image is not None:
             self.vision_viewer.update_image(image, "rgb")
         if depth_image is not None:
-            self.vision_viewer.update_image(depth_image, "depth")
+            self._schedule_depth_visual_for_frame(frame)
         else:
+            self._depth_visual_last_task_ts = 0.0
             self.vision_viewer.update_image(None, "depth")
 
         resolution = self._ros2_vision_resolution
@@ -628,7 +635,7 @@ class MainWindow(QMainWindow):
             resolution=resolution,
             fps=self._ros2_vision_render_fps,
             rx_fps=self._ros2_vision_rx_fps if self._ros2_vision_rx_fps > 0 else self._ros2_vision_fps,
-            dropped_frames=self._ros2_vision_dropped_frames + self._ros2_vision_queue_overwrite_total,
+            dropped_frames=self._ros2_vision_dropped_frames + self._ros2_vision_queue_overwrite_total + self._depth_visual_result_overwrite_total,
             last_frame_age_ms=self._ros2_vision_last_frame_age_ms,
             stall_count=self._ros2_vision_stall_count,
         )
@@ -701,6 +708,20 @@ class MainWindow(QMainWindow):
         self._update_vision_stall_state(now=now, frame_rendered=True)
         self._update_vision_status_widgets()
 
+    def _schedule_depth_visual_for_frame(self, frame) -> None:
+        if frame is None or getattr(frame, "depth_image", None) is None:
+            return
+        frame_timestamp = float(getattr(frame, "timestamp", 0.0) or 0.0)
+        if frame_timestamp <= 0.0:
+            frame_timestamp = time.time()
+        if abs(frame_timestamp - self._depth_visual_last_task_ts) < 1e-6:
+            return
+        self._depth_visual_last_task_ts = frame_timestamp
+        self._depth_visual_worker.submit({
+            "frame_timestamp": frame_timestamp,
+            "depth_image": getattr(frame, "depth_image", None),
+        })
+
     def _schedule_analysis_for_frame(self, frame, *, reason: str, show_error: bool) -> None:
         if frame is None or getattr(frame, "color_image", None) is None:
             return
@@ -754,11 +775,16 @@ class MainWindow(QMainWindow):
 
     def _poll_vision_workers(self) -> None:
         self._analysis_result_overwrite_total += self._analysis_worker.take_overwrite_count()
+        self._depth_visual_result_overwrite_total += self._depth_visual_worker.take_overwrite_count()
         self._pointcloud_result_overwrite_total += self._pointcloud_worker.take_overwrite_count()
 
         analysis_result = self._analysis_worker.take_result()
         if analysis_result is not None:
             self._apply_analysis_result(analysis_result.task, analysis_result.value, analysis_result.error)
+
+        depth_result = self._depth_visual_worker.take_result()
+        if depth_result is not None:
+            self._apply_depth_visual_result(depth_result.task, depth_result.value, depth_result.error)
 
         pointcloud_result = self._pointcloud_worker.take_result()
         if pointcloud_result is not None:
@@ -790,6 +816,20 @@ class MainWindow(QMainWindow):
             self.vision_viewer.update_image(result.get("pose_results", []), "pose")
         if self._pointcloud_refresh_requested and self._ros2_vision_latest_frame is not None:
             self._schedule_pointcloud_for_frame(self._ros2_vision_latest_frame, force=True)
+
+    def _apply_depth_visual_result(self, task: Dict[str, Any], result: Optional[Dict[str, Any]], error: Optional[str]) -> None:
+        if not self.vision_viewer:
+            return
+        if error:
+            self.logger.debug("Depth visual worker failed: %s", error)
+            return
+        if not result:
+            return
+        frame_timestamp = float(task.get("frame_timestamp", 0.0) or 0.0)
+        latest_timestamp = float(getattr(self._ros2_vision_latest_frame, "timestamp", 0.0) or 0.0) if self._ros2_vision_latest_frame is not None else 0.0
+        if latest_timestamp > 0.0 and frame_timestamp > 0.0 and frame_timestamp + 1e-6 < latest_timestamp:
+            return
+        self.vision_viewer.update_image(result.get("depth_visual"), "depth")
 
     def _apply_pointcloud_result(self, task: Dict[str, Any], result: Optional[Dict[str, Any]], error: Optional[str]) -> None:
         if error:
@@ -844,6 +884,8 @@ class MainWindow(QMainWindow):
         reason = "gui_render_blocked"
         if self._ros2_vision_last_frame_age_ms is not None and float(self._ros2_vision_last_frame_age_ms) > 1500.0:
             reason = "upstream_no_frame"
+        elif self._depth_visual_worker.get_backlog_size() > 1:
+            reason = "depth_visual_backlog"
         elif self._analysis_worker.get_backlog_size() > 1:
             reason = "analysis_backlog"
         elif self._pointcloud_worker.get_backlog_size() > 1:
@@ -1355,6 +1397,12 @@ class MainWindow(QMainWindow):
             "pose_results": pose_results,
             "detection_time": time.time() if detections else 0.0,
         }
+
+    def _run_depth_visual_task(self, task: Dict[str, Any]) -> Dict[str, Any]:
+        depth_image = task.get("depth_image")
+        if depth_image is None:
+            return {"depth_visual": None}
+        return {"depth_visual": colorize_depth_for_display(depth_image)}
 
     def _run_pointcloud_task(self, task: Dict[str, Any]) -> Dict[str, Any]:
         depth_image = task.get("depth_image")
@@ -3489,6 +3537,10 @@ class MainWindow(QMainWindow):
                 self.vision_self_check_timer.stop()
             try:
                 self._analysis_worker.stop()
+            except Exception:
+                pass
+            try:
+                self._depth_visual_worker.stop()
             except Exception:
                 pass
             try:

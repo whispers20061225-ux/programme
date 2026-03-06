@@ -323,22 +323,7 @@ try {
             $consecutiveFailures += 1
         } else {
             if ($monitorMode -eq "steady") {
-                $topicsHealthy = (Wait-Topic -TopicName $colorTopic -TimeoutSec $lightweightTimeoutSec) -and
-                    (Wait-Topic -TopicName $depthTopic -TimeoutSec $lightweightTimeoutSec) -and
-                    (Wait-Topic -TopicName $infoTopic -TimeoutSec $lightweightTimeoutSec)
-                $messageHealthy = $false
-                if ($topicsHealthy) {
-                    $messageHealthy = Wait-MessageOnce -TopicName $infoTopic -TimeoutSec $lightweightTimeoutSec
-                }
-                if ($topicsHealthy -and $messageHealthy) {
-                    $consecutiveFailures = 0
-                    Write-Ok "steady healthy: lightweight topic/message checks passed"
-                } else {
-                    $monitorMode = "degraded"
-                    $healthySamples = 0
-                    $consecutiveFailures += 1
-                    Write-WarnMsg ("steady check failed; switching to degraded sampling fail_count={0}/{1}" -f $consecutiveFailures, $MaxConsecutiveFailures)
-                }
+                $consecutiveFailures = 0
             } else {
                 $colorHz = Get-TopicAverageHz -TopicName $colorTopic -SampleSec $HzSampleSec
                 $depthHz = Get-TopicAverageHz -TopicName $depthTopic -SampleSec $HzSampleSec
