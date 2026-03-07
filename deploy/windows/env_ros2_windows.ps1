@@ -44,6 +44,59 @@ function Prepend-Path {
     $env:PATH = "$PathValue;$env:PATH"
 }
 
+function Add-PathListEntry {
+    param(
+        [string]$VariableName,
+        [string]$Entry
+    )
+
+    if (-not $Entry) {
+        return
+    }
+    if (-not (Test-Path $Entry)) {
+        return
+    }
+
+    $separator = [System.IO.Path]::PathSeparator
+    $current = [System.Environment]::GetEnvironmentVariable($VariableName, "Process")
+    if ([string]::IsNullOrWhiteSpace($current)) {
+        [System.Environment]::SetEnvironmentVariable($VariableName, $Entry, "Process")
+        return
+    }
+
+    $parts = @($current -split [regex]::Escape("$separator"))
+    if ($parts -contains $Entry) {
+        return
+    }
+
+    [System.Environment]::SetEnvironmentVariable($VariableName, "$Entry$separator$current", "Process")
+}
+
+function Configure-GazeboResourcePaths {
+    param([string]$ProjectRoot)
+
+    $resourceDirs = @(
+        (Join-Path $ProjectRoot "ros2_ws\\src\\tactile_sim"),
+        (Join-Path $ProjectRoot "ros2_ws\\src\\tactile_bringup")
+    )
+
+    foreach ($packageName in @("tactile_sim", "tactile_bringup")) {
+        try {
+            $packagePrefix = (& ros2 pkg prefix $packageName 2>$null)
+            if ($LASTEXITCODE -eq 0 -and $packagePrefix) {
+                $resourceDirs += (Join-Path $packagePrefix "share\\$packageName")
+            }
+        }
+        catch {
+        }
+    }
+
+    foreach ($resourceDir in $resourceDirs) {
+        Add-PathListEntry -VariableName "GZ_SIM_RESOURCE_PATH" -Entry $resourceDir
+        Add-PathListEntry -VariableName "IGN_GAZEBO_RESOURCE_PATH" -Entry $resourceDir
+    }
+}
+
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $projectRoot = (Resolve-Path (Join-Path $scriptDir "..\\..")).Path
 $ddsTemplateFile = (Resolve-Path (Join-Path $projectRoot "config\\dds\\cyclonedds_windows.xml")).Path
@@ -294,6 +347,7 @@ if ($PixiOpenSslBin) {
 }
 
 Import-SetupScript -SetupPath $WorkspaceSetup -Label "Workspace setup"
+Configure-GazeboResourcePaths -ProjectRoot $projectRoot
 
 $env:ROS_DOMAIN_ID = "$DomainId"
 $env:RMW_IMPLEMENTATION = "rmw_cyclonedds_cpp"
@@ -318,6 +372,7 @@ Write-Host "RMW_IMPLEMENTATION=$env:RMW_IMPLEMENTATION"
 Write-Host "CYCLONEDDS_URI=$env:CYCLONEDDS_URI"
 Write-Host "PROGRAMME_WINDOWS_HOST_ONLY_IP=$env:PROGRAMME_WINDOWS_HOST_ONLY_IP"
 Write-Host "PROGRAMME_VM_HOST_ONLY_IP=$env:PROGRAMME_VM_HOST_ONLY_IP"
+Write-Host "GZ_SIM_RESOURCE_PATH=$env:GZ_SIM_RESOURCE_PATH"
 if ($CleanConda) {
     Write-Host "CONDA_CLEAN=enabled"
 }

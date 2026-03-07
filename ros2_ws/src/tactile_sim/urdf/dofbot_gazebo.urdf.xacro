@@ -1,6 +1,6 @@
 <?xml version="1.0"?>
 <robot name="yahboom_dofbot" xmlns:xacro="http://www.ros.org/wiki/xacro">
-  <xacro:property name="mesh_root" value="package://tactile_sim/meshes"/>
+  <xacro:property name="mesh_root" value="file://$(find tactile_sim)/meshes"/>
 
   <link name="world"/>
 

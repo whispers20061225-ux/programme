@@ -10,7 +10,13 @@ from launch.actions import (
 from launch.conditions import IfCondition, UnlessCondition
 from launch.event_handlers import OnProcessExit
 from launch.launch_description_sources import PythonLaunchDescriptionSource
-from launch.substitutions import Command, FindExecutable, LaunchConfiguration, PathJoinSubstitution
+from launch.substitutions import (
+    Command,
+    EnvironmentVariable,
+    FindExecutable,
+    LaunchConfiguration,
+    PathJoinSubstitution,
+)
 from launch_ros.actions import Node
 from launch_ros.substitutions import FindPackageShare
 
@@ -84,6 +90,8 @@ def generate_launch_description() -> LaunchDescription:
     start_gui = LaunchConfiguration("start_gui")
     world_name = LaunchConfiguration("world_name")
     bridge_clock = LaunchConfiguration("bridge_clock")
+    tactile_sim_share = FindPackageShare("tactile_sim")
+    tactile_bringup_share = FindPackageShare("tactile_bringup")
 
     current_ld_library_path = os.environ.get("LD_LIBRARY_PATH", "")
     cleaned_ld_library_path = ":".join(
@@ -92,6 +100,26 @@ def generate_launch_description() -> LaunchDescription:
     sanitize_ld_library_path = SetEnvironmentVariable(
         name="LD_LIBRARY_PATH",
         value=cleaned_ld_library_path,
+    )
+    set_gz_resource_path = SetEnvironmentVariable(
+        name="GZ_SIM_RESOURCE_PATH",
+        value=[
+            tactile_sim_share,
+            os.pathsep,
+            tactile_bringup_share,
+            os.pathsep,
+            EnvironmentVariable("GZ_SIM_RESOURCE_PATH", default_value=""),
+        ],
+    )
+    set_ign_resource_path = SetEnvironmentVariable(
+        name="IGN_GAZEBO_RESOURCE_PATH",
+        value=[
+            tactile_sim_share,
+            os.pathsep,
+            tactile_bringup_share,
+            os.pathsep,
+            EnvironmentVariable("IGN_GAZEBO_RESOURCE_PATH", default_value=""),
+        ],
     )
 
     gazebo_headless_launch = IncludeLaunchDescription(
@@ -217,6 +245,8 @@ def generate_launch_description() -> LaunchDescription:
             world_name_arg,
             bridge_clock_arg,
             sanitize_ld_library_path,
+            set_gz_resource_path,
+            set_ign_resource_path,
             gazebo_headless_launch,
             gazebo_gui_launch,
             robot_state_publisher,

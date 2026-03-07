@@ -43,6 +43,56 @@ if [[ -f "${WS_SETUP}" ]]; then
   source_setup_compat "${WS_SETUP}"
 fi
 
+append_path_list() {
+  local var_name="$1"
+  local entry="$2"
+  local separator="${3:-:}"
+  local current_value="${!var_name:-}"
+
+  if [[ -z "${entry}" || ! -d "${entry}" ]]; then
+    return 0
+  fi
+  if [[ -z "${current_value}" ]]; then
+    printf -v "${var_name}" '%s' "${entry}"
+    export "${var_name}"
+    return 0
+  fi
+  case "${separator}${current_value}${separator}" in
+    *"${separator}${entry}${separator}"*)
+      return 0
+      ;;
+  esac
+  printf -v "${var_name}" '%s%s%s' "${entry}" "${separator}" "${current_value}"
+  export "${var_name}"
+}
+
+configure_gazebo_resource_paths() {
+  local resource_dirs=(
+    "${PROJECT_ROOT}/ros2_ws/src/tactile_sim"
+    "${PROJECT_ROOT}/ros2_ws/src/tactile_bringup"
+  )
+  local package_prefix=""
+  local package_share=""
+
+  for package_name in tactile_sim tactile_bringup; do
+    set +e
+    package_prefix="$(ros2 pkg prefix "${package_name}" 2>/dev/null)"
+    local rc=$?
+    set -e
+    if [[ ${rc} -eq 0 ]]; then
+      package_share="${package_prefix}/share/${package_name}"
+      resource_dirs+=("${package_share}")
+    fi
+  done
+
+  for resource_dir in "${resource_dirs[@]}"; do
+    append_path_list "GZ_SIM_RESOURCE_PATH" "${resource_dir}" ":"
+    append_path_list "IGN_GAZEBO_RESOURCE_PATH" "${resource_dir}" ":"
+  done
+}
+
+configure_gazebo_resource_paths
+
 require_cyclonedds_rmw() {
   if [[ -f "/opt/ros/jazzy/lib/librmw_cyclonedds_cpp.so" ]]; then
     return 0
@@ -189,3 +239,4 @@ echo "RMW_IMPLEMENTATION=${RMW_IMPLEMENTATION}"
 echo "CYCLONEDDS_URI=${CYCLONEDDS_URI}"
 echo "PROGRAMME_VM_HOST_ONLY_IP=${PROGRAMME_VM_HOST_ONLY_IP}"
 echo "PROGRAMME_WINDOWS_HOST_ONLY_IP=${PROGRAMME_WINDOWS_HOST_ONLY_IP}"
+echo "GZ_SIM_RESOURCE_PATH=${GZ_SIM_RESOURCE_PATH:-}"
