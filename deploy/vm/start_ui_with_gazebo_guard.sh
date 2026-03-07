@@ -37,6 +37,73 @@ has_ros_package() {
   return ${rc}
 }
 
+package_prefix() {
+  local package_name="$1"
+  set +e
+  ros2 pkg prefix "${package_name}" 2>/dev/null
+  local rc=$?
+  set -e
+  return ${rc}
+}
+
+check_installed_asset() {
+  local package_name="$1"
+  local relative_path="$2"
+  local source_path="${3:-}"
+  local prefix=""
+  local installed_path=""
+
+  prefix="$(package_prefix "${package_name}" || true)"
+  if [[ -z "${prefix}" ]]; then
+    return 1
+  fi
+
+  installed_path="${prefix}/${relative_path}"
+  if [[ ! -e "${installed_path}" ]]; then
+    echo "[WARN] missing installed asset: ${installed_path}"
+    return 1
+  fi
+
+  if [[ -n "${source_path}" && -e "${source_path}" && "${source_path}" -nt "${installed_path}" ]]; then
+    echo "[WARN] stale installed asset: ${installed_path}"
+    return 1
+  fi
+
+  return 0
+}
+
+gazebo_workspace_assets_ready() {
+  check_installed_asset \
+    "tactile_sim" \
+    "share/tactile_sim/urdf/dofbot_gazebo.urdf.xacro" \
+    "${PROJECT_ROOT}/ros2_ws/src/tactile_sim/urdf/dofbot_gazebo.urdf.xacro" || return 1
+  check_installed_asset \
+    "tactile_sim" \
+    "share/tactile_sim/launch/gazebo_arm.launch.py" \
+    "${PROJECT_ROOT}/ros2_ws/src/tactile_sim/launch/gazebo_arm.launch.py" || return 1
+  check_installed_asset \
+    "tactile_sim" \
+    "share/tactile_sim/config/ros2_controllers.yaml" \
+    "${PROJECT_ROOT}/ros2_ws/src/tactile_sim/config/ros2_controllers.yaml" || return 1
+  check_installed_asset \
+    "tactile_sim" \
+    "share/tactile_sim/worlds/phase6_tabletop.world" \
+    "${PROJECT_ROOT}/ros2_ws/src/tactile_sim/worlds/phase6_tabletop.world" || return 1
+  check_installed_asset \
+    "tactile_sim" \
+    "share/tactile_sim/meshes/base_link.STL" \
+    "${PROJECT_ROOT}/models/meshes/base_link.STL" || return 1
+  check_installed_asset \
+    "tactile_bringup" \
+    "share/tactile_bringup/launch/phase6_sim_gazebo.launch.py" \
+    "${PROJECT_ROOT}/ros2_ws/src/tactile_bringup/launch/phase6_sim_gazebo.launch.py" || return 1
+  check_installed_asset \
+    "tactile_bringup" \
+    "share/tactile_bringup/config/phase6_sim_gazebo.yaml" \
+    "${PROJECT_ROOT}/ros2_ws/src/tactile_bringup/config/phase6_sim_gazebo.yaml" || return 1
+  return 0
+}
+
 wait_for_node() {
   local node="$1"
   local node_alt="${node#/}"
@@ -345,6 +412,13 @@ done
 
 if (( ${#missing_workspace_packages[@]} > 0 )); then
   echo "[WARN] missing workspace packages: ${missing_workspace_packages[*]}"
+  if ! auto_build_gazebo_packages; then
+    exit 1
+  fi
+fi
+
+if ! gazebo_workspace_assets_ready; then
+  echo "[WARN] Gazebo workspace assets are missing or stale; rebuilding workspace packages."
   if ! auto_build_gazebo_packages; then
     exit 1
   fi

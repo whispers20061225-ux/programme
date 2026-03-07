@@ -9,6 +9,12 @@ WS_SETUP="${PROJECT_ROOT}/ros2_ws/install/setup.bash"
 DDS_TEMPLATE_FILE="${PROJECT_ROOT}/config/dds/cyclonedds_vm.xml"
 DDS_RUNTIME_FILE="${TMPDIR:-/tmp}/programme_cyclonedds_vm_${DOMAIN_ID}.xml"
 
+# Keep ROS2 tools on the system interpreter path even when the caller shell
+# already has Conda or custom Python site-packages active.
+unset PYTHONHOME || true
+unset PYTHONPATH || true
+export PYTHONNOUSERSITE=1
+
 source_setup_compat() {
   local setup_path="$1"
   local had_nounset=0
