@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import logging
+import multiprocessing as mp
+import os
+import queue
 import time
 from dataclasses import dataclass
 from threading import Lock
@@ -12,6 +15,14 @@ from PyQt5.QtCore import QMutex, QThread, QWaitCondition, pyqtSignal
 from PyQt5.QtGui import QImage
 
 from core.data_acquisition import DataBuffer, SensorData
+
+try:
+    from core.ros2_vision_sidecar import run_vision_sidecar
+
+    VISION_SIDECAR_IMPORT_ERROR = None
+except Exception as exc:  # pragma: no cover - optional dependency at runtime
+    run_vision_sidecar = None
+    VISION_SIDECAR_IMPORT_ERROR = exc
 
 try:
     import rclpy
@@ -336,6 +347,19 @@ class Ros2DataAcquisitionThread(QThread):
         self._node = None
         self._executor = None
         self.logger = logging.getLogger(__name__)
+        self._vision_sidecar_enabled = bool(
+            self.vision_enabled
+            and os.name != "nt"
+            and run_vision_sidecar is not None
+            and str(os.environ.get("PROGRAMME_DISABLE_VISION_SIDECAR", "")).strip().lower() not in ("1", "true", "yes", "on")
+        )
+        self._vision_sidecar_ctx = None
+        self._vision_sidecar_process = None
+        self._vision_sidecar_command_queue = None
+        self._vision_sidecar_frame_queue = None
+        self._vision_sidecar_status_queue = None
+        self._vision_sidecar_error_queue = None
+        self._vision_sidecar_dead = False
 
         # Vision runtime caches.
         self._vision_stream_requested = False
@@ -398,7 +422,7 @@ class Ros2DataAcquisitionThread(QThread):
                 self,
                 self.tactile_topic,
                 self.health_topic,
-                vision_enabled=self.vision_enabled,
+                vision_enabled=(self.vision_enabled and not self._vision_sidecar_enabled),
                 color_topic=self.color_topic,
                 depth_topic=self.depth_topic,
                 camera_info_topic=self.camera_info_topic,
@@ -409,6 +433,8 @@ class Ros2DataAcquisitionThread(QThread):
             else:
                 self._executor = SingleThreadedExecutor()
             self._executor.add_node(self._node)
+            if self._vision_sidecar_enabled:
+                self._start_vision_sidecar()
 
             self.status_changed.emit(
                 "running",
@@ -439,7 +465,10 @@ class Ros2DataAcquisitionThread(QThread):
                     raise exc
 
                 now = time.time()
-                self._apply_vision_transport_updates(now)
+                if self._vision_sidecar_enabled:
+                    self._poll_vision_sidecar(now)
+                else:
+                    self._apply_vision_transport_updates(now)
                 if now - self._status_emit_ts >= self._status_emit_interval_sec:
                     self._status_emit_ts = now
                     self.status_changed.emit(
@@ -451,7 +480,8 @@ class Ros2DataAcquisitionThread(QThread):
                             "last_data_age_sec": (now - self._last_data_ts) if self._last_data_ts > 0 else None,
                         },
                     )
-                    self._emit_vision_status(now=now, force=False)
+                    if not self._vision_sidecar_enabled:
+                        self._emit_vision_status(now=now, force=False)
 
         except ExternalShutdownException:
             # Expected during Ctrl-C / external ROS shutdown.
@@ -471,6 +501,8 @@ class Ros2DataAcquisitionThread(QThread):
                     self._node.destroy_node()
             except Exception:
                 pass
+            if self._vision_sidecar_enabled:
+                self._stop_vision_sidecar()
             if self._ros_owned_context and rclpy is not None and rclpy.ok():
                 try:
                     rclpy.shutdown()
@@ -657,6 +689,180 @@ class Ros2DataAcquisitionThread(QThread):
         with self._vision_lock:
             self._vision_subscription_mode = effective_label
 
+    def _start_vision_sidecar(self) -> None:
+        if not self._vision_sidecar_enabled:
+            return
+        if self._vision_sidecar_process is not None and self._vision_sidecar_process.is_alive():
+            return
+        if VISION_SIDECAR_IMPORT_ERROR is not None:
+            self._vision_sidecar_enabled = False
+            self.error_count += 1
+            self.error_occurred.emit(
+                "vision_sidecar_import_error",
+                {"error": str(VISION_SIDECAR_IMPORT_ERROR), "message": "vision sidecar is unavailable"},
+            )
+            return
+
+        self._vision_sidecar_ctx = mp.get_context("spawn")
+        self._vision_sidecar_command_queue = self._vision_sidecar_ctx.Queue(maxsize=8)
+        self._vision_sidecar_frame_queue = self._vision_sidecar_ctx.Queue(maxsize=1)
+        self._vision_sidecar_status_queue = self._vision_sidecar_ctx.Queue(maxsize=8)
+        self._vision_sidecar_error_queue = self._vision_sidecar_ctx.Queue(maxsize=8)
+        self._vision_sidecar_dead = False
+
+        config = {
+            "color_topic": self.color_topic,
+            "depth_topic": self.depth_topic,
+            "camera_info_topic": self.camera_info_topic,
+            "vision_stale_timeout_sec": self.vision_stale_timeout_sec,
+            "vision_max_fps": self.vision_max_fps,
+            "vision_qos_mode": self.vision_qos_mode,
+            "log_level": logging.getLevelName(self.logger.level or logging.INFO),
+        }
+        self._vision_sidecar_process = self._vision_sidecar_ctx.Process(
+            target=run_vision_sidecar,
+            kwargs={
+                "config": config,
+                "command_queue": self._vision_sidecar_command_queue,
+                "frame_queue": self._vision_sidecar_frame_queue,
+                "status_queue": self._vision_sidecar_status_queue,
+                "error_queue": self._vision_sidecar_error_queue,
+            },
+            daemon=True,
+        )
+        self._vision_sidecar_process.start()
+        self.logger.info("ROS2 vision sidecar started (pid=%s)", self._vision_sidecar_process.pid)
+        if self._vision_stream_requested:
+            self._send_vision_sidecar_command("connect")
+            if self._vision_depth_profile != "off":
+                self._send_vision_sidecar_command("set_depth_profile", profile=self._vision_depth_profile)
+
+    def _stop_vision_sidecar(self) -> None:
+        proc = self._vision_sidecar_process
+        if proc is None:
+            return
+        try:
+            self._send_vision_sidecar_command("shutdown")
+        except Exception:
+            pass
+        try:
+            proc.join(timeout=2.0)
+        except Exception:
+            pass
+        if proc.is_alive():
+            try:
+                proc.terminate()
+                proc.join(timeout=1.0)
+            except Exception:
+                pass
+        self._vision_sidecar_process = None
+        self._vision_sidecar_command_queue = None
+        self._vision_sidecar_frame_queue = None
+        self._vision_sidecar_status_queue = None
+        self._vision_sidecar_error_queue = None
+        self._vision_sidecar_ctx = None
+
+    def _send_vision_sidecar_command(self, action: str, **payload: Any) -> None:
+        if not self._vision_sidecar_enabled or self._vision_sidecar_command_queue is None:
+            return
+        command = {"action": action}
+        command.update(payload)
+        self._vision_sidecar_command_queue.put_nowait(command)
+
+    def _apply_sidecar_status(self, info: Dict[str, Any]) -> None:
+        with self._vision_lock:
+            self._vision_connected = bool(info.get("connected", False))
+            self._vision_fps = float(info.get("rx_fps", info.get("fps", 0.0)) or 0.0)
+            self._vision_dropped_frames = int(info.get("dropped_frames", 0) or 0)
+            self._vision_queue_overwrite_count = int(info.get("queue_overwrite_count", 0) or 0)
+            self._vision_resolution = str(info.get("resolution", self._vision_resolution) or "N/A")
+            self._vision_device_info = str(info.get("device_info", self._vision_device_info) or self._vision_device_info)
+            self._vision_subscription_mode = str(info.get("subscription_mode", self._vision_subscription_mode) or self._vision_subscription_mode)
+            self._vision_depth_subscription_enabled = bool(info.get("depth_subscribed", False))
+            self._vision_info_subscription_enabled = bool(info.get("info_subscribed", False))
+            self._vision_status_emit_ts = time.time()
+        self.vision_status.emit(info)
+
+    def _ingest_sidecar_frame_payload(self, payload: Dict[str, Any]) -> None:
+        image = payload.get("color_image")
+        if image is None:
+            return
+        now = time.time()
+        color_qimage = _rgb_array_to_qimage(image)
+        emit_frame = Ros2CameraFrame(
+            timestamp=float(payload.get("timestamp", now) or now),
+            color_image=image,
+            depth_image=payload.get("depth_image"),
+            intrinsics=dict(payload.get("intrinsics") or {}),
+            color_qimage=color_qimage,
+        )
+        with self._vision_lock:
+            self._vision_latest_color = emit_frame.color_image
+            self._vision_latest_depth = emit_frame.depth_image
+            self._vision_intrinsics = dict(emit_frame.intrinsics)
+            self._vision_last_color_ts = now
+            if emit_frame.depth_image is not None:
+                self._vision_last_depth_ts = now
+            if self._vision_latest_frame is not None and self._vision_latest_frame_seq != self._vision_consumed_frame_seq:
+                self._vision_queue_overwrite_count += 1
+            self._vision_latest_frame = emit_frame
+            self._vision_latest_frame_seq += 1
+            self._vision_connected = True
+        if self.vision_emit_signal:
+            self.vision_frame.emit(emit_frame)
+
+    def _poll_vision_sidecar(self, now: float) -> None:
+        if not self._vision_sidecar_enabled:
+            return
+        proc = self._vision_sidecar_process
+        if proc is not None and not proc.is_alive() and not self._vision_sidecar_dead:
+            self._vision_sidecar_dead = True
+            self.error_count += 1
+            self.error_occurred.emit("vision_sidecar_exited", {"error": "vision sidecar exited unexpectedly"})
+
+        latest_status = None
+        latest_frame = None
+        while self._vision_sidecar_status_queue is not None:
+            try:
+                latest_status = self._vision_sidecar_status_queue.get_nowait()
+            except queue.Empty:
+                break
+        while self._vision_sidecar_frame_queue is not None:
+            try:
+                latest_frame = self._vision_sidecar_frame_queue.get_nowait()
+            except queue.Empty:
+                break
+        while self._vision_sidecar_error_queue is not None:
+            try:
+                err = self._vision_sidecar_error_queue.get_nowait()
+            except queue.Empty:
+                break
+            self.error_count += 1
+            self.error_occurred.emit(str(err.get("status", "vision_sidecar_error")), dict(err.get("info") or {}))
+
+        if latest_frame is not None:
+            self._ingest_sidecar_frame_payload(latest_frame)
+        if latest_status is not None:
+            self._apply_sidecar_status(latest_status)
+
+    def _reset_local_vision_state_locked(self) -> None:
+        self._vision_connected = False
+        self._vision_status_emit_ts = 0.0
+        self._vision_last_emit_ts = 0.0
+        self._vision_last_color_ts = 0.0
+        self._vision_last_depth_ts = 0.0
+        self._vision_latest_color = None
+        self._vision_latest_depth = None
+        self._vision_latest_frame = None
+        self._vision_color_count = 0
+        self._vision_prev_color_count = 0
+        self._vision_prev_status_ts = 0.0
+        self._vision_fps = 0.0
+        self._vision_dropped_frames = 0
+        self._vision_queue_overwrite_count = 0
+        self._vision_latest_frame_seq = 0
+        self._vision_consumed_frame_seq = 0
+
     def request_vision_connect(self) -> None:
         if not self.vision_enabled:
             self.vision_status.emit(
@@ -669,36 +875,38 @@ class Ros2DataAcquisitionThread(QThread):
             )
             return
         with self._vision_lock:
-            now = time.time()
             self._vision_stream_requested = True
-            self._vision_connected = False
-            self._vision_status_emit_ts = 0.0
-            self._vision_last_emit_ts = 0.0
-            self._vision_last_color_ts = 0.0
-            self._vision_last_depth_ts = 0.0
-            self._vision_latest_color = None
-            self._vision_latest_depth = None
-            self._vision_latest_frame = None
-            self._vision_color_count = 0
-            self._vision_prev_color_count = 0
-            self._vision_prev_status_ts = 0.0
-            self._vision_fps = 0.0
-            self._vision_dropped_frames = 0
-            self._vision_queue_overwrite_count = 0
-            self._update_vision_transport_plan_locked(now, reset_qos_probe=True)
-        self._emit_vision_status(now=time.time(), force=True, message="Waiting for ROS2 camera frames...")
+            self._reset_local_vision_state_locked()
+            if not self._vision_sidecar_enabled:
+                self._update_vision_transport_plan_locked(time.time(), reset_qos_probe=True)
+        if self._vision_sidecar_enabled:
+            self._send_vision_sidecar_command("connect")
+            self.vision_status.emit(
+                {
+                    "connected": False,
+                    "streaming": False,
+                    "fps": 0.0,
+                    "rx_fps": 0.0,
+                    "render_fps": 0.0,
+                    "dropped_frames": 0,
+                    "queue_overwrite_count": 0,
+                    "last_frame_age_ms": None,
+                    "stall_count": 0,
+                    "resolution": "N/A",
+                    "message": "Waiting for ROS2 camera frames...",
+                    "simulation": False,
+                    "device_info": self._vision_device_info,
+                    "subscription_mode": self._vision_subscription_mode,
+                    "depth_subscribed": False,
+                    "info_subscribed": False,
+                }
+            )
+        else:
+            self._emit_vision_status(now=time.time(), force=True, message="Waiting for ROS2 camera frames...")
 
     def request_vision_disconnect(self) -> None:
         with self._vision_lock:
-            now = time.time()
             self._vision_stream_requested = False
-            self._vision_connected = False
-            self._vision_latest_color = None
-            self._vision_latest_depth = None
-            self._vision_latest_frame = None
-            self._vision_fps = 0.0
-            self._vision_dropped_frames = 0
-            self._vision_queue_overwrite_count = 0
             self._vision_resolution = "N/A"
             self._vision_depth_profile = "off"
             self._vision_depth_target_fps = 0.0
@@ -706,7 +914,11 @@ class Ros2DataAcquisitionThread(QThread):
             self._vision_last_depth_ts = 0.0
             self._vision_auto_qos_probe_active = False
             self._vision_auto_qos_probe_deadline_ts = 0.0
-            self._update_vision_transport_plan_locked(now, reset_qos_probe=False)
+            self._reset_local_vision_state_locked()
+            if not self._vision_sidecar_enabled:
+                self._update_vision_transport_plan_locked(time.time(), reset_qos_probe=False)
+        if self._vision_sidecar_enabled:
+            self._send_vision_sidecar_command("disconnect")
         self.vision_status.emit(
             {
                 "connected": False,
@@ -747,7 +959,10 @@ class Ros2DataAcquisitionThread(QThread):
             if self._vision_depth_target_fps <= 0.0:
                 self._vision_latest_depth = None
                 self._vision_last_depth_ts = 0.0
-            self._update_vision_transport_plan_locked(time.time(), reset_qos_probe=False)
+            if not self._vision_sidecar_enabled:
+                self._update_vision_transport_plan_locked(time.time(), reset_qos_probe=False)
+        if self._vision_sidecar_enabled:
+            self._send_vision_sidecar_command("set_depth_profile", profile=profile_key)
         self.logger.info("ROS2 vision depth profile: %s (target_fps=%.1f)", profile_key, depth_fps_map[profile_key])
 
     def ingest_vision_color(self, msg: Any) -> None:
