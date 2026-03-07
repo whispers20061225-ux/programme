@@ -569,6 +569,12 @@ class VisionViewer(QWidget):
         self.pointcloud_ax.view_init(elev=20, azim=45)
         self.pointcloud_canvas.draw_idle()
 
+    def update_rgb_qimage(self, image: Any, qimage: Optional[QImage]) -> None:
+        self.current_image = image
+        self.original_image = image
+        self._latest_rgb_qimage = None if qimage is None else QImage(qimage)
+        self._refresh_rgb_views()
+
     def update_image(self, image: Any, image_type: str = "rgb") -> None:
         if image_type == "rgb":
             self.current_image = image

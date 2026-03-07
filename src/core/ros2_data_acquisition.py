@@ -9,6 +9,7 @@ from typing import Any, Dict, Optional
 import numpy as np
 
 from PyQt5.QtCore import QMutex, QThread, QWaitCondition, pyqtSignal
+from PyQt5.QtGui import QImage
 
 from core.data_acquisition import DataBuffer, SensorData
 
@@ -52,6 +53,20 @@ class Ros2CameraFrame:
     color_image: Optional[np.ndarray]
     depth_image: Optional[np.ndarray]
     intrinsics: Dict[str, float]
+    color_qimage: Optional[QImage] = None
+
+
+def _rgb_array_to_qimage(image: Optional[np.ndarray]) -> Optional[QImage]:
+    if image is None:
+        return None
+    arr = np.asarray(image)
+    if arr.ndim != 3 or arr.shape[2] != 3:
+        return None
+    if arr.dtype != np.uint8:
+        arr = np.clip(arr, 0, 255).astype(np.uint8)
+    arr = np.require(arr, requirements=["C"])
+    height, width, _ = arr.shape
+    return QImage(arr.data, width, height, arr.strides[0], QImage.Format_RGB888).copy()
 
 
 class _Ros2AcquisitionNode(Node):
@@ -746,6 +761,7 @@ class Ros2DataAcquisitionThread(QThread):
             if image is None:
                 return
 
+            color_qimage = _rgb_array_to_qimage(image)
             emit_frame: Optional[Ros2CameraFrame] = None
             with self._vision_lock:
                 if not self._vision_stream_requested:
@@ -767,6 +783,7 @@ class Ros2DataAcquisitionThread(QThread):
                         color_image=self._vision_latest_color,
                         depth_image=self._vision_latest_depth,
                         intrinsics=dict(self._vision_intrinsics),
+                        color_qimage=color_qimage,
                     )
                     self._vision_latest_frame = emit_frame
                     self._vision_latest_frame_seq += 1

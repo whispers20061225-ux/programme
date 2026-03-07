@@ -132,7 +132,7 @@ class MainWindow(QMainWindow):
         self._last_packet_label_ts = 0.0
         self._last_control_panel_data_ts = 0.0
         self._vision_status_widget_last_ts = 0.0
-        self._vision_status_widget_interval_sec = 0.25
+        self._vision_status_widget_interval_sec = 1.0
         
         # 数据缓冲区
         self.sensor_data_buffer = None
@@ -632,9 +632,13 @@ class MainWindow(QMainWindow):
             return
 
         image = getattr(frame, "color_image", None)
+        color_qimage = getattr(frame, "color_qimage", None)
         depth_image = getattr(frame, "depth_image", None)
         if image is not None:
-            self.vision_viewer.update_image(image, "rgb")
+            if color_qimage is not None and hasattr(self.vision_viewer, "update_rgb_qimage"):
+                self.vision_viewer.update_rgb_qimage(image, color_qimage)
+            else:
+                self.vision_viewer.update_image(image, "rgb")
         if depth_image is not None:
             if self._is_depth_view_active():
                 self._schedule_depth_visual_for_frame(frame)
@@ -1094,7 +1098,7 @@ class MainWindow(QMainWindow):
             self._ros2_vision_device_info = device_info
         if self._ros2_vision_last_frame_age_ms is not None:
             self._ros2_vision_last_upstream_frame_wall_ts = time.time() - (float(self._ros2_vision_last_frame_age_ms) / 1000.0)
-        self._update_vision_status_widgets(force=True)
+        self._update_vision_status_widgets(force=False)
 
     def _get_detection_config(self) -> Dict[str, Any]:
         """生成检测配置，兼容 DemoConfig 或 CameraConfig"""
