@@ -483,18 +483,32 @@ class MainWindow(QMainWindow):
         """处理视觉视图发起的连接请求"""
         if self._is_ros2_vision_mode():
             try:
-                self.data_acquisition_thread.request_vision_connect()
+                stale_threshold_ms = None
+                if self.data_acquisition_thread is not None:
+                    try:
+                        stale_timeout_sec = float(getattr(self.data_acquisition_thread, "vision_stale_timeout_sec", 2.0) or 2.0)
+                        stale_threshold_ms = max(2000.0, stale_timeout_sec * 1500.0)
+                    except Exception:
+                        stale_threshold_ms = 2000.0
+                force_restart = bool(not self._ros2_vision_connected or self._ros2_vision_latest_frame is None)
+                if (not force_restart) and self._ros2_vision_last_frame_age_ms is not None and stale_threshold_ms is not None:
+                    try:
+                        force_restart = float(self._ros2_vision_last_frame_age_ms) >= float(stale_threshold_ms)
+                    except Exception:
+                        force_restart = False
+                self.data_acquisition_thread.request_vision_connect(force_restart=force_restart)
                 self._sync_vision_depth_profile()
-                if self.vision_viewer:
+                if force_restart and self.vision_viewer:
                     self.vision_viewer.update_camera_status(
                         connected=False,
                         streaming=False,
                         resolution="N/A",
                         fps=0,
                     )
-                self.control_panel.update_device_status(
-                    vision={"connected": False, "simulation": self._ros2_vision_simulation}
-                )
+                if force_restart:
+                    self.control_panel.update_device_status(
+                        vision={"connected": False, "simulation": self._ros2_vision_simulation}
+                    )
             except Exception as e:
                 if self.vision_viewer:
                     self.vision_viewer.show_connection_error(str(e))

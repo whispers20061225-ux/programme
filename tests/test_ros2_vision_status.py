@@ -59,6 +59,39 @@ class Ros2VisionStatusTests(unittest.TestCase):
         self.assertEqual(status["queue_overwrite_count"], 2)
         self.assertGreaterEqual(status["last_frame_age_ms"], 0.0)
 
+    def test_request_vision_connect_is_noop_when_sidecar_stream_already_requested(self):
+        thread = Ros2DataAcquisitionThread(config=None, vision_enabled=True)
+        thread._vision_sidecar_enabled = True
+        thread._vision_stream_requested = True
+        commands = []
+        payloads = []
+        thread._send_vision_sidecar_command = lambda action, **payload: commands.append((action, payload)) or True
+        thread.vision_status.connect(payloads.append)
+
+        thread.request_vision_connect()
+
+        self.assertEqual(commands, [])
+        self.assertEqual(payloads, [])
+
+    def test_request_vision_connect_force_restart_reissues_sidecar_connect(self):
+        thread = Ros2DataAcquisitionThread(config=None, vision_enabled=True)
+        thread._vision_sidecar_enabled = True
+        thread._vision_stream_requested = True
+        thread._vision_connected = True
+        thread._vision_last_color_ts = 10.0
+        commands = []
+        payloads = []
+        thread._send_vision_sidecar_command = lambda action, **payload: commands.append((action, payload)) or True
+        thread.vision_status.connect(payloads.append)
+
+        thread.request_vision_connect(force_restart=True)
+
+        self.assertEqual(commands, [("connect", {})])
+        self.assertTrue(payloads)
+        self.assertFalse(payloads[-1]["connected"])
+        self.assertEqual(payloads[-1]["message"], "Waiting for ROS2 camera frames...")
+        self.assertEqual(thread._vision_last_color_ts, 0.0)
+
 
 if __name__ == "__main__":
     unittest.main()

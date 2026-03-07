@@ -1015,7 +1015,7 @@ class Ros2DataAcquisitionThread(QThread):
         self._vision_consumed_frame_seq = 0
         self._last_sidecar_status_signature = None
 
-    def request_vision_connect(self) -> None:
+    def request_vision_connect(self, *, force_restart: bool = False) -> None:
         if not self.vision_enabled:
             self.vision_status.emit(
                 {
@@ -1029,34 +1029,36 @@ class Ros2DataAcquisitionThread(QThread):
         with self._vision_lock:
             already_requested = bool(self._vision_stream_requested)
             self._vision_stream_requested = True
-            if not already_requested:
+            should_restart = bool(force_restart or not already_requested)
+            if should_restart:
                 self._reset_local_vision_state_locked()
                 if not self._vision_sidecar_enabled:
                     self._update_vision_transport_plan_locked(time.time(), reset_qos_probe=True)
         if self._vision_sidecar_enabled:
-            if not already_requested:
+            if should_restart:
                 self._send_vision_sidecar_command("connect")
-            self.vision_status.emit(
-                {
-                    "connected": False,
-                    "streaming": False,
-                    "fps": 0.0,
-                    "rx_fps": 0.0,
-                    "render_fps": 0.0,
-                    "dropped_frames": 0,
-                    "queue_overwrite_count": 0,
-                    "last_frame_age_ms": None,
-                    "stall_count": 0,
-                    "resolution": "N/A",
-                    "message": "Waiting for ROS2 camera frames...",
-                    "simulation": False,
-                    "device_info": self._vision_device_info,
-                    "subscription_mode": self._vision_subscription_mode,
-                    "depth_subscribed": False,
-                    "info_subscribed": False,
-                }
-            )
-        else:
+            if should_restart:
+                self.vision_status.emit(
+                    {
+                        "connected": False,
+                        "streaming": False,
+                        "fps": 0.0,
+                        "rx_fps": 0.0,
+                        "render_fps": 0.0,
+                        "dropped_frames": 0,
+                        "queue_overwrite_count": 0,
+                        "last_frame_age_ms": None,
+                        "stall_count": 0,
+                        "resolution": "N/A",
+                        "message": "Waiting for ROS2 camera frames...",
+                        "simulation": False,
+                        "device_info": self._vision_device_info,
+                        "subscription_mode": self._vision_subscription_mode,
+                        "depth_subscribed": False,
+                        "info_subscribed": False,
+                    }
+                )
+        elif should_restart:
             self._emit_vision_status(now=time.time(), force=True, message="Waiting for ROS2 camera frames...")
 
     def request_vision_disconnect(self) -> None:
