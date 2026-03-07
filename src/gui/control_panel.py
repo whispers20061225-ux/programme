@@ -809,6 +809,7 @@ class ControlPanel(QWidget):
 
         self.logger = logging.getLogger(__name__)
         self._device_status_cache = {}
+        self._vision_available = True
 
 
 
@@ -8778,6 +8779,28 @@ class ControlPanel(QWidget):
         self._device_status_cache[key] = state
         return True
 
+    def set_vision_available(self, available: bool, message: str = "Vision: Disabled") -> None:
+        available = bool(available)
+        if available == self._vision_available:
+            if not available:
+                self.vision_status_label.setText(str(message))
+            return
+
+        self._vision_available = available
+        if self._vision_available:
+            self._device_status_cache.pop("vision", None)
+            self.vision_status_label.setText(self._format_status_text("Vision", False, False))
+            self._apply_status_style(self.vision_status_label, False, False)
+            self.vision_connect_btn.setEnabled(True)
+            self.vision_disconnect_btn.setEnabled(False)
+            return
+
+        self._device_status_cache["vision"] = (False, False)
+        self.vision_status_label.setText(str(message))
+        self._apply_status_style(self.vision_status_label, False, False)
+        self.vision_connect_btn.setEnabled(False)
+        self.vision_disconnect_btn.setEnabled(False)
+
     def update_device_status(self, stm32: Optional[Dict[str, Any]] = None,
                              vision: Optional[Dict[str, Any]] = None,
                              arm: Optional[Dict[str, Any]] = None,
@@ -8799,13 +8822,14 @@ class ControlPanel(QWidget):
                 self.home_gripper_btn.setEnabled(connected)
 
         if vision is not None:
-            connected = bool(vision.get("connected"))
-            simulation = bool(vision.get("simulation"))
-            if self._should_update_device_status("vision", connected, simulation):
-                self.vision_status_label.setText(self._format_status_text("Vision", connected, simulation))
-                self._apply_status_style(self.vision_status_label, connected, simulation)
-                self.vision_connect_btn.setEnabled(not connected)
-                self.vision_disconnect_btn.setEnabled(connected)
+            if self._vision_available:
+                connected = bool(vision.get("connected"))
+                simulation = bool(vision.get("simulation"))
+                if self._should_update_device_status("vision", connected, simulation):
+                    self.vision_status_label.setText(self._format_status_text("Vision", connected, simulation))
+                    self._apply_status_style(self.vision_status_label, connected, simulation)
+                    self.vision_connect_btn.setEnabled(not connected)
+                    self.vision_disconnect_btn.setEnabled(connected)
 
         if arm is not None:
             connected = bool(arm.get("connected"))

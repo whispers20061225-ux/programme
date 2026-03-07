@@ -248,6 +248,7 @@ class MainWindow(QMainWindow):
         
         # 连接信号
         self.connect_signals()
+        self._refresh_optional_device_availability()
         
         # ????
         self.logger = logging.getLogger(__name__)
@@ -479,8 +480,33 @@ class MainWindow(QMainWindow):
             and hasattr(self.data_acquisition_thread, "vision_status")
         )
 
+    def _is_vision_runtime_enabled(self) -> bool:
+        if self._is_ros2_vision_mode():
+            return bool(getattr(self.data_acquisition_thread, "vision_enabled", True))
+        return bool(self.vision_viewer is not None or self.camera_capture is not None)
+
+    def _is_vision_required(self) -> bool:
+        vision_ui_cfg = getattr(self.config.ui, "vision_ui", {}) if hasattr(self.config, "ui") else {}
+        show_camera_view = True
+        if isinstance(vision_ui_cfg, dict):
+            show_camera_view = bool(vision_ui_cfg.get("show_camera_view", True))
+        return bool(show_camera_view and self._is_vision_runtime_enabled())
+
+    def _refresh_optional_device_availability(self) -> None:
+        if not hasattr(self, "control_panel") or self.control_panel is None:
+            return
+        if hasattr(self.control_panel, "set_vision_available"):
+            if self._is_vision_required():
+                self.control_panel.set_vision_available(True)
+            else:
+                self.control_panel.set_vision_available(False, "Vision: Disabled")
+
     def _handle_connect_camera(self):
         """处理视觉视图发起的连接请求"""
+        if not self._is_vision_runtime_enabled():
+            if self.vision_viewer:
+                self.vision_viewer.show_connection_error("Vision runtime disabled")
+            return
         if self._is_ros2_vision_mode():
             try:
                 stale_threshold_ms = None
@@ -3043,7 +3069,8 @@ class MainWindow(QMainWindow):
             if self._last_tactile_data_ts > 0.0 and (now - self._last_tactile_data_ts) <= 2.5:
                 tactile_connected = True
 
-            if self._is_ros2_vision_mode():
+            vision_required = self._is_vision_required()
+            if self._is_ros2_vision_mode() and self._is_vision_runtime_enabled():
                 vision_connected = bool(self._ros2_vision_connected)
                 if (not vision_connected) and self._ros2_vision_last_frame_age_ms is not None:
                     try:
@@ -3056,6 +3083,9 @@ class MainWindow(QMainWindow):
             else:
                 vision_connected = bool(self.camera_capture and getattr(self.camera_capture, "is_capturing", False))
                 vision_simulation = self._is_camera_simulation()
+            if not vision_required:
+                vision_connected = False
+                vision_simulation = False
 
             device_state = {
                 "stm32": {"connected": stm32_connected, "simulation": stm32_simulation},
@@ -3077,7 +3107,7 @@ class MainWindow(QMainWindow):
                 missing = []
                 if not stm32_connected:
                     missing.append("STM32 disconnected")
-                if not vision_connected:
+                if vision_required and not vision_connected:
                     missing.append("Vision disconnected")
                 if not tactile_connected:
                     missing.append("Tactile disconnected")
@@ -3096,7 +3126,7 @@ class MainWindow(QMainWindow):
                     self._last_missing_log_time = now
 
             hardware_ready = stm32_connected and tactile_connected
-            all_connected = hardware_ready and arm_connected and vision_connected
+            all_connected = hardware_ready and arm_connected and (vision_connected or not vision_required)
             any_connected = stm32_connected or tactile_connected or arm_connected or vision_connected
 
             main_button_state = (not all_connected, any_connected, hardware_ready)
@@ -3824,6 +3854,7 @@ class MainWindow(QMainWindow):
             
             # 更新控制面板
             self.control_panel.set_config(self.config)
+            self._refresh_optional_device_availability()
             
             # 应用主题
             if hasattr(self.config.ui, 'theme'):

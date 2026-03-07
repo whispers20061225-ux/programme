@@ -217,6 +217,12 @@ sudo apt install -y \
   ros-jazzy-xacro
 ```
 
+One-click VM startup:
+
+```bash
+bash deploy/vm/start_ui_with_gazebo_guard.sh 0 25 20 10.0 dayiprogramme312 false true
+```
+
 Terminal A:
 
 ```bash
@@ -238,7 +244,7 @@ ros2 launch tactile_bringup phase6_sim_gazebo.launch.py bridge_clock:=false
 Terminal B:
 
 ```bash
-python main_ros2.py --control-mode ros2 --log-level INFO
+python main_ros2.py --control-mode ros2 --vision-enabled false --show-vision-ui false --log-level INFO
 ```
 
 Quick checks:

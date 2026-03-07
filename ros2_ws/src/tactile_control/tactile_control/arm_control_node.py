@@ -171,7 +171,7 @@ class ArmControlNode(Node):
             self._latest_arm_state_ts = time.time()
 
     def _on_health(self, msg: SystemHealth) -> None:
-        if msg.node_name != "arm_driver_node":
+        if msg.node_name not in ("arm_driver_node", "arm_sim_driver_node"):
             return
         if msg.level < self.emergency_latch_level:
             return
@@ -191,7 +191,7 @@ class ArmControlNode(Node):
             ts = self._latest_arm_state_ts
 
         if state is None:
-            return False, "arm state not received (check arm_driver_node and /arm/state)"
+            return False, "arm state not received (check arm_driver_node/arm_sim_driver_node and /arm/state)"
         if time.time() - ts > self.arm_state_timeout_sec:
             return False, "arm state is stale"
         if not state.connected:

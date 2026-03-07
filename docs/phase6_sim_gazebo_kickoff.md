@@ -15,6 +15,8 @@ This file tracks the first Gazebo Sim integration step for phase 6.2.
 - Added Gazebo bringup entry:
   - `ros2_ws/src/tactile_bringup/launch/phase6_sim_gazebo.launch.py`
   - `ros2_ws/src/tactile_bringup/config/phase6_sim_gazebo.yaml`
+- Added one-click VM guard entry:
+  - `deploy/vm/start_ui_with_gazebo_guard.sh`
 
 ## Compatibility intent
 
@@ -40,7 +42,13 @@ sudo apt install -y \
   ros-jazzy-xacro
 ```
 
-Terminal A:
+One-click VM startup:
+
+```bash
+bash deploy/vm/start_ui_with_gazebo_guard.sh 0 25 20 10.0 dayiprogramme312 false true
+```
+
+Manual launch, Terminal A:
 
 ```bash
 cd ros2_ws
@@ -64,7 +72,7 @@ ros2 launch tactile_bringup phase6_sim_gazebo.launch.py bridge_clock:=false
 Terminal B:
 
 ```bash
-python main_ros2.py --control-mode ros2 --log-level INFO
+python main_ros2.py --control-mode ros2 --vision-enabled false --show-vision-ui false --log-level INFO
 ```
 
 Terminal C:
@@ -79,4 +87,4 @@ ros2 service call /control/arm/move_joints tactile_interfaces/srv/MoveArmJoints 
 ## Next step
 
 - Add tactile contact coupling between Gazebo contacts and `tactile_sim_node` output.
-- Add startup health gating to delay task/UI commands until controllers are ready.
+- Add launch-level health gating so controllers are guaranteed ready even without the guard script.

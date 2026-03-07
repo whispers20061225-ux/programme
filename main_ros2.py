@@ -22,6 +22,12 @@ if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
 
 
+def _parse_bool_arg(value):
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in ("1", "true", "yes", "y", "on")
+
+
 def _configure_matplotlib_runtime() -> None:
     """Reduce non-actionable matplotlib font noise in GUI runtime."""
     warnings.filterwarnings(
@@ -107,9 +113,10 @@ class Ros2PhaseApp:
         vision_qos_mode: str = "auto",
         control_mode: str = "ros2",
         command_timeout_sec: float = 5.0,
+        show_vision_ui: bool | None = None,
+        show_simulation_ui: bool | None = None,
     ):
         self.logger = logging.getLogger(__name__)
-        self.config = self._load_config(config_path, sensor_type)
         self.sensor_type = sensor_type
         self.tactile_topic = tactile_topic
         self.health_topic = health_topic
@@ -123,6 +130,11 @@ class Ros2PhaseApp:
         self.vision_qos_mode = str(vision_qos_mode or "auto").strip().lower()
         self.control_mode = control_mode
         self.command_timeout_sec = command_timeout_sec
+        self.config = self._load_config(config_path, sensor_type)
+        self._apply_ui_overrides(
+            show_vision_ui=show_vision_ui,
+            show_simulation_ui=show_simulation_ui,
+        )
 
         self.app = None
         self.main_window = None
@@ -150,6 +162,34 @@ class Ros2PhaseApp:
             except Exception as exc:  # noqa: BLE001
                 logging.getLogger(__name__).warning("Failed to load config, fallback to default: %s", exc)
         return DemoConfig()
+
+    def _apply_ui_overrides(
+        self,
+        *,
+        show_vision_ui: bool | None,
+        show_simulation_ui: bool | None,
+    ) -> None:
+        ui_config = getattr(self.config, "ui", None)
+        if ui_config is None:
+            return
+
+        effective_show_vision_ui = show_vision_ui
+        if effective_show_vision_ui is None and not self.vision_enabled:
+            effective_show_vision_ui = False
+
+        if effective_show_vision_ui is not None:
+            vision_ui = getattr(ui_config, "vision_ui", {}) or {}
+            if not isinstance(vision_ui, dict):
+                vision_ui = {}
+            vision_ui["show_camera_view"] = bool(effective_show_vision_ui)
+            ui_config.vision_ui = vision_ui
+
+        if show_simulation_ui is not None:
+            simulation_ui = getattr(ui_config, "simulation_ui", {}) or {}
+            if not isinstance(simulation_ui, dict):
+                simulation_ui = {}
+            simulation_ui["show_simulation_view"] = bool(show_simulation_ui)
+            ui_config.simulation_ui = simulation_ui
 
     def initialize_modules(self) -> bool:
         try:
@@ -313,9 +353,21 @@ def main() -> None:
     parser.add_argument("--arm-state-topic", type=str, default="/arm/state", help="ROS2 arm state topic")
     parser.add_argument(
         "--vision-enabled",
-        type=lambda x: str(x).lower() in ("1", "true", "yes", "y", "on"),
+        type=_parse_bool_arg,
         default=True,
         help="Enable ROS2 camera subscriptions for Vision UI",
+    )
+    parser.add_argument(
+        "--show-vision-ui",
+        type=_parse_bool_arg,
+        default=None,
+        help="Override whether the Vision tab is shown",
+    )
+    parser.add_argument(
+        "--show-simulation-ui",
+        type=_parse_bool_arg,
+        default=None,
+        help="Override whether the legacy simulation tab is shown",
     )
     parser.add_argument(
         "--vision-color-topic",
@@ -397,6 +449,8 @@ def main() -> None:
         vision_qos_mode=args.vision_qos_mode,
         control_mode=args.control_mode,
         command_timeout_sec=args.command_timeout_sec,
+        show_vision_ui=args.show_vision_ui,
+        show_simulation_ui=args.show_simulation_ui,
     )
     sys.exit(app.start())
 

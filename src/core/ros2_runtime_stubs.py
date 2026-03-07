@@ -337,6 +337,8 @@ class Ros2ControlThread(QThread):
             }
 
     def on_arm_state(self, msg: ArmState) -> None:
+        frame_id = str(getattr(getattr(msg, "header", None), "frame_id", "") or "").lower()
+        servo_simulation = "sim_arm" in frame_id or "simulation" in frame_id
         snapshot = {
             "connected": bool(msg.connected),
             "enabled": bool(self._arm_enabled),
@@ -347,7 +349,7 @@ class Ros2ControlThread(QThread):
             "battery_voltage": float(msg.battery_voltage),
             "safety": "error" if bool(msg.error) else "normal",
             "control_mode": "joint",
-            "connection_type": "ros2_control",
+            "connection_type": "simulation" if servo_simulation else "ros2_control",
             "error": bool(msg.error),
             "error_message": str(msg.error_message),
             "moving": bool(msg.moving),
@@ -359,6 +361,7 @@ class Ros2ControlThread(QThread):
             self._arm_snapshot = snapshot
             self._stm32_connected = bool(snapshot["connected"])
             self._arm_state_received_at = time.time()
+            self._servo_simulation = bool(servo_simulation)
             if not self._stm32_connected:
                 self._arm_enabled = False
 
@@ -379,14 +382,14 @@ class Ros2ControlThread(QThread):
         healthy = bool(health["healthy"])
         level = int(health["level"])
 
-        if node_name == "tactile_sensor_node":
+        if node_name in ("tactile_sensor_node", "tactile_sim_node"):
             sensor_connected = bool(healthy and level <= 1)
-            sensor_simulation = "simulation" in message
+            sensor_simulation = node_name == "tactile_sim_node" or "simulation" in message
             with self._lock:
                 self._tactile_connected = sensor_connected
                 self._sensor_simulation = sensor_simulation
 
-        if node_name == "arm_driver_node":
+        if node_name in ("arm_driver_node", "arm_sim_driver_node"):
             # Keep connection truth source on /arm/state; health is only a fallback.
             arm_connected_from_health = bool(healthy and "disconnected" not in message)
             with self._lock:
@@ -395,8 +398,9 @@ class Ros2ControlThread(QThread):
                 self._stm32_connected = (
                     arm_state_connected if arm_state_fresh else arm_connected_from_health
                 )
-                # Arm driver node is always hardware-facing in current phase.
-                self._servo_simulation = False
+                self._servo_simulation = (
+                    node_name == "arm_sim_driver_node" or "simulation" in message or "sim arm" in message
+                )
 
         if (not health["healthy"]) and health["level"] >= 2:
             self.error_occurred.emit("health_error", health)
@@ -443,7 +447,10 @@ class Ros2ControlThread(QThread):
             if not success:
                 detail = f"STM32 connect failed: {message}"
             elif not state_ok:
-                detail = "STM32 enable sent, but no /arm/state received (check arm_driver_node)"
+                detail = (
+                    "STM32 enable sent, but no /arm/state received "
+                    "(check arm_driver_node or arm_sim_driver_node)"
+                )
             elif not self._stm32_connected:
                 detail = "STM32 enable succeeded, but arm still reports disconnected"
             else:
@@ -513,7 +520,10 @@ class Ros2ControlThread(QThread):
             if not success:
                 detail = f"STM32 connect failed: {message}"
             elif not state_ok:
-                detail = "STM32 enable sent, but no /arm/state received (check arm_driver_node)"
+                detail = (
+                    "STM32 enable sent, but no /arm/state received "
+                    "(check arm_driver_node or arm_sim_driver_node)"
+                )
             elif not self._stm32_connected:
                 detail = "STM32 enable succeeded, but arm still reports disconnected"
             else:
