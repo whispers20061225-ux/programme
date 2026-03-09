@@ -43,23 +43,23 @@ except ImportError:
 from config.demo_config import DemoConfig
 from config.paxini_gen3_config import PaxiniGen3Config, create_3x3_config
 from config.deep_learning_config import DeepLearningConfig, create_default_dl_config
-from gui.main_window import MainWindow
-from core.demo_manager import DemoManager
-from core.hardware_interface import HardwareInterface
-from core.data_acquisition import DataAcquisitionThread
-from core.control_thread import ControlThread
-from tactile_perception import create_default_pipeline
-from servo_control.gripper_controller import GripperController
-from arm_control.learm_interface import LearmInterface
-from arm_control.joint_controller import JointController
+from src.gui.main_window import MainWindow
+from src.core.demo_manager import DemoManager
+from src.core.hardware_interface import HardwareInterface
+from src.core.data_acquisition import DataAcquisitionThread
+from src.core.control_thread import ControlThread
+from src.tactile_perception import create_default_pipeline
+from src.servo_control.gripper_controller import GripperController
+from src.arm_control.learm_interface import LearmInterface
+from src.arm_control.joint_controller import JointController
 
 # 导入深度学习模块
 if DEEP_LEARNING_AVAILABLE:
     try:
-        from deep_learning.inference import GraspInference
-        from deep_learning.pid_controller import NeuralPIDController, AdaptivePID
-        from deep_learning.data_loader import RealTimeDataLoader
-        from deep_learning.grip_classifier import GraspStateClassifier
+        from src.deep_learning.inference import GraspInference
+        from src.deep_learning.pid_controller import NeuralPIDController, AdaptivePID
+        from src.deep_learning.data_loader import RealTimeDataLoader
+        from src.deep_learning.grip_classifier import GraspStateClassifier
     except ImportError as e:
         print(f"警告: 深度学习模块导入失败: {e}")
         DEEP_LEARNING_AVAILABLE = False

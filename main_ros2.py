@@ -193,8 +193,8 @@ class Ros2PhaseApp:
 
     def initialize_modules(self) -> bool:
         try:
-            from core.ros2_data_acquisition import Ros2DataAcquisitionThread
-            from core.ros2_runtime_stubs import (
+            from src.core.ros2_data_acquisition import Ros2DataAcquisitionThread
+            from src.core.ros2_runtime_stubs import (
                 Ros2ControlThread,
                 Ros2ControlThreadStub,
                 Ros2DemoManagerStub,
@@ -237,7 +237,7 @@ class Ros2PhaseApp:
         try:
             from PyQt5.QtGui import QFont
             from PyQt5.QtWidgets import QApplication
-            from gui.main_window import MainWindow
+            from src.gui.main_window import MainWindow
 
             self.app = QApplication(sys.argv)
             self.app.setApplicationName("Tactile Gripper Demo")

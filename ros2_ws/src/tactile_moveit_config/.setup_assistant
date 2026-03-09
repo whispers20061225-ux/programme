@@ -1,0 +1,7 @@
+moveit_setup_assistant_config:
+  urdf:
+    package: tactile_sim
+    relative_path: urdf/dofbot_gazebo.urdf.xacro
+    xacro_args: ""
+  srdf:
+    relative_path: config/dofbot.srdf

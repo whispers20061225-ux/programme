@@ -10,11 +10,19 @@ def generate_launch_description() -> LaunchDescription:
     default_param_file = PathJoinSubstitution(
         [FindPackageShare("tactile_bringup"), "config", "phase6_sim_gazebo.yaml"]
     )
+    default_world = PathJoinSubstitution(
+        [FindPackageShare("tactile_sim"), "worlds", "phase6_tabletop.world"]
+    )
 
     param_file_arg = DeclareLaunchArgument(
         "param_file",
         default_value=default_param_file,
         description="Path to phase6 Gazebo simulation YAML",
+    )
+    world_arg = DeclareLaunchArgument(
+        "world",
+        default_value=default_world,
+        description="Gazebo world file passed through to tactile_sim/gazebo_arm.launch.py",
     )
     use_sim_time_arg = DeclareLaunchArgument(
         "use_sim_time",
@@ -51,8 +59,19 @@ def generate_launch_description() -> LaunchDescription:
         default_value="true",
         description="Bridge Gazebo clock to ROS /clock",
     )
+    use_gpu_accel_arg = DeclareLaunchArgument(
+        "use_gpu_accel",
+        default_value="true",
+        description="Use WSLg D3D12 GPU acceleration for Gazebo rendering",
+    )
+    gpu_adapter_arg = DeclareLaunchArgument(
+        "gpu_adapter",
+        default_value="NVIDIA",
+        description="Preferred GPU adapter name for WSLg D3D12 rendering",
+    )
 
     param_file = LaunchConfiguration("param_file")
+    world = LaunchConfiguration("world")
     use_sim_time = LaunchConfiguration("use_sim_time")
     start_gui = LaunchConfiguration("start_gui")
     spawn_x = LaunchConfiguration("spawn_x")
@@ -60,6 +79,8 @@ def generate_launch_description() -> LaunchDescription:
     spawn_z = LaunchConfiguration("spawn_z")
     world_name = LaunchConfiguration("world_name")
     bridge_clock = LaunchConfiguration("bridge_clock")
+    use_gpu_accel = LaunchConfiguration("use_gpu_accel")
+    gpu_adapter = LaunchConfiguration("gpu_adapter")
 
     gazebo_arm_launch = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
@@ -68,6 +89,7 @@ def generate_launch_description() -> LaunchDescription:
             )
         ),
         launch_arguments={
+            "world": world,
             "use_sim_time": use_sim_time,
             "start_gui": start_gui,
             "spawn_x": spawn_x,
@@ -75,6 +97,8 @@ def generate_launch_description() -> LaunchDescription:
             "spawn_z": spawn_z,
             "world_name": world_name,
             "bridge_clock": bridge_clock,
+            "use_gpu_accel": use_gpu_accel,
+            "gpu_adapter": gpu_adapter,
         }.items(),
     )
 
@@ -121,6 +145,7 @@ def generate_launch_description() -> LaunchDescription:
     return LaunchDescription(
         [
             param_file_arg,
+            world_arg,
             use_sim_time_arg,
             start_gui_arg,
             spawn_x_arg,
@@ -128,6 +153,8 @@ def generate_launch_description() -> LaunchDescription:
             spawn_z_arg,
             world_name_arg,
             bridge_clock_arg,
+            use_gpu_accel_arg,
+            gpu_adapter_arg,
             gazebo_arm_launch,
             tactile_sim_node,
             arm_sim_driver_node,

@@ -43,9 +43,7 @@ setup(
         ),
         (
             f"share/{package_name}/worlds",
-            [
-                "worlds/phase6_tabletop.world",
-            ],
+            sorted(glob("worlds/*.world")),
         ),
     ],
     install_requires=["setuptools"],
@@ -59,6 +57,7 @@ setup(
         "console_scripts": [
             "tactile_sim_node = tactile_sim.tactile_sim_node:main",
             "arm_sim_driver_node = tactile_sim.arm_sim_driver_node:main",
+            "sim_realsense_adapter_node = tactile_sim.sim_realsense_adapter_node:main",
         ],
     },
 )

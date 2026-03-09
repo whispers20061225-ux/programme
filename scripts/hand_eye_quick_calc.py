@@ -29,9 +29,9 @@ if PROJECT_ROOT not in sys.path:
 
 try:
     from config.demo_config import DemoConfig
-    from arm_control.learm_interface import LearmInterface
-    from arm_control.joint_controller import JointController
-    from arm_control.cartesian_controller import CartesianController, Pose
+    from src.arm_control.learm_interface import LearmInterface
+    from src.arm_control.joint_controller import JointController
+    from src.arm_control.cartesian_controller import CartesianController, Pose
 except Exception as exc:
     raise RuntimeError(f"无法导入项目模块，请确认在项目根目录运行：{exc}")
 

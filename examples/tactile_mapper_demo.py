@@ -16,7 +16,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import json
 import time
-from tactile_perception import TactileMapper
+from src.tactile_perception import TactileMapper
 
 def demo_basic_mapping():
     """基础映射演示"""

@@ -214,7 +214,7 @@ class ArmDriverNode(Node):
             return False, self._last_error
 
         try:
-            from arm_control.learm_interface import LearmInterface
+            from src.arm_control.learm_interface import LearmInterface
             from config.demo_config import DemoConfig
 
             candidate_ports = self._candidate_arm_ports()

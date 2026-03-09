@@ -1,0 +1,27 @@
+{
+  "include": [
+    "main.py",
+    "main_ros2.py",
+    "config",
+    "examples",
+    "scripts",
+    "src",
+    "tests",
+    "ros2_ws/src/tactile_hardware/tactile_hardware"
+  ],
+  "exclude": [
+    "**/__pycache__",
+    "ros2_ws/build",
+    "ros2_ws/install",
+    "ros2_ws/log"
+  ],
+  "executionEnvironments": [
+    {
+      "root": ".",
+      "extraPaths": [
+        ".",
+        "./src"
+      ]
+    }
+  ]
+}

@@ -28,7 +28,7 @@ if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
 
 import pybullet as p
-from simulation.simulator import Simulator
+from src.simulation.simulator import Simulator
 from config.simulation_config import SimulationConfig
 
 
