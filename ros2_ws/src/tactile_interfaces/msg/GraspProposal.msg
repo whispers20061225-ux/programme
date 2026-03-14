@@ -1,0 +1,13 @@
+std_msgs/Header header
+geometry_msgs/Point contact_point_1
+geometry_msgs/Point contact_point_2
+geometry_msgs/Point grasp_center
+geometry_msgs/Vector3 approach_direction
+geometry_msgs/Vector3 closing_direction
+geometry_msgs/Pose grasp_pose
+geometry_msgs/Pose pregrasp_pose
+float32 grasp_width_m
+float32 confidence_score
+float32 semantic_score
+uint32 candidate_rank
+string task_constraint_tag

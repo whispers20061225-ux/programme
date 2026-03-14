@@ -17,10 +17,15 @@ setup(
     maintainer_email="whisp@users.noreply.github.com",
     description="Vision bridge nodes for phase 6 ROS2 migration.",
     license="MIT",
+    tests_require=["pytest"],
     entry_points={
         "console_scripts": [
             "realsense_monitor_node = tactile_vision.realsense_monitor_node:main",
             "realsense_camera_node = tactile_vision.realsense_camera_node:main",
+            "qwen_semantic_node = tactile_vision.qwen_semantic_node:main",
+            "detector_seg_node = tactile_vision.detector_seg_node:main",
+            "cloud_filter_node = tactile_vision.cloud_filter_node:main",
+            "grasp_backend_node = tactile_vision.grasp_backend_node:main",
         ],
     },
 )

@@ -6,6 +6,14 @@ All notable project updates are recorded in this file.
 
 - Next planned step:
   - Phase 6.2 Gazebo + MoveIt2 + SmolVLA shadow-policy integration.
+- Qwen2.5-VL shadow-mode kickoff:
+  - Added `tactile_vision/qwen_vl_target_node`.
+  - Added bringup entrypoint:
+    - `phase6_qwen_shadow.launch.py`
+    - `phase6_qwen_shadow.yaml`
+  - The node consumes RGB frames and optional prompt text, calls a local
+    OpenAI-compatible multimodal endpoint, and publishes normalized JSON to
+    `/qwen/vision_result` without driving the existing pick pipeline.
 - Split-stream stability optimization (Windows + VM):
   - Added C++ latest-frame relay package:
     - `ros2_ws/src/tactile_vision_cpp`

@@ -23,10 +23,166 @@ Visualization Manager:
       Planning Scene Topic: monitored_planning_scene
       Robot Description: robot_description
       Scene Geometry:
-        Scene Alpha: 1
+        Scene Alpha: 0.18
       Scene Robot:
-        Robot Alpha: 0.5
+        Robot Alpha: 0.22
       Value: true
+    - Alpha: 1
+      Class: rviz_default_plugins/MarkerArray
+      Enabled: true
+      Marker Topic: /grasp/candidate_markers
+      Name: Grasp Candidates
+      Namespaces:
+        {}
+      Queue Size: 10
+      Value: true
+    - Alpha: 1
+      Class: rviz_default_plugins/MarkerArray
+      Enabled: true
+      Marker Topic: /grasp/execution_debug_markers
+      Name: Execution Debug
+      Namespaces:
+        {}
+      Queue Size: 10
+      Value: true
+    - Alpha: 0.55
+      Autocompute Intensity Bounds: true
+      Axis: Z
+      Channel Name: intensity
+      Class: rviz_default_plugins/PointCloud2
+      Color: 180; 180; 180
+      Color Transformer: FlatColor
+      Decay Time: 0
+      Enabled: true
+      Invert Rainbow: false
+      Max Color: 255; 255; 255
+      Min Color: 0; 0; 0
+      Name: ROI Cloud
+      Position Transformer: XYZ
+      Queue Size: 10
+      Selectable: true
+      Size (Pixels): 4
+      Size (m): 0.006
+      Style: Spheres
+      Topic: /grasp/roi_cloud
+      Use Fixed Frame: true
+      Use rainbow: false
+      Value: true
+    - Alpha: 1
+      Autocompute Intensity Bounds: true
+      Axis: Z
+      Channel Name: intensity
+      Class: rviz_default_plugins/PointCloud2
+      Color: 40; 210; 255
+      Color Transformer: FlatColor
+      Decay Time: 0
+      Enabled: true
+      Invert Rainbow: false
+      Max Color: 255; 255; 255
+      Min Color: 0; 0; 0
+      Name: Target Cloud
+      Position Transformer: XYZ
+      Queue Size: 10
+      Selectable: true
+      Size (Pixels): 5
+      Size (m): 0.009
+      Style: Spheres
+      Topic: /grasp/target_cloud
+      Use Fixed Frame: true
+      Use rainbow: false
+      Value: true
+    - Alpha: 1
+      Autocompute Intensity Bounds: true
+      Axis: Z
+      Channel Name: intensity
+      Class: rviz_default_plugins/PointCloud2
+      Color: 255; 170; 170
+      Color Transformer: FlatColor
+      Decay Time: 0
+      Enabled: true
+      Invert Rainbow: false
+      Max Color: 255; 255; 255
+      Min Color: 0; 0; 0
+      Name: Contact Point 1
+      Position Transformer: XYZ
+      Queue Size: 10
+      Selectable: true
+      Size (Pixels): 8
+      Size (m): 0.006
+      Style: Spheres
+      Topic: /grasp/selected_contact_point_1_cloud
+      Use Fixed Frame: true
+      Use rainbow: false
+      Value: true
+    - Alpha: 1
+      Autocompute Intensity Bounds: true
+      Axis: Z
+      Channel Name: intensity
+      Class: rviz_default_plugins/PointCloud2
+      Color: 165; 205; 255
+      Color Transformer: FlatColor
+      Decay Time: 0
+      Enabled: true
+      Invert Rainbow: false
+      Max Color: 255; 255; 255
+      Min Color: 0; 0; 0
+      Name: Contact Point 2
+      Position Transformer: XYZ
+      Queue Size: 10
+      Selectable: true
+      Size (Pixels): 8
+      Size (m): 0.006
+      Style: Spheres
+      Topic: /grasp/selected_contact_point_2_cloud
+      Use Fixed Frame: true
+      Use rainbow: false
+      Value: true
+    - Alpha: 1
+      Autocompute Intensity Bounds: true
+      Axis: Z
+      Channel Name: intensity
+      Class: rviz_default_plugins/PointCloud2
+      Color: 255; 235; 170
+      Color Transformer: FlatColor
+      Decay Time: 0
+      Enabled: true
+      Invert Rainbow: false
+      Max Color: 255; 255; 255
+      Min Color: 0; 0; 0
+      Name: Grasp Center
+      Position Transformer: XYZ
+      Queue Size: 10
+      Selectable: true
+      Size (Pixels): 8
+      Size (m): 0.0055
+      Style: Spheres
+      Topic: /grasp/selected_grasp_center_cloud
+      Use Fixed Frame: true
+      Use rainbow: false
+      Value: true
+    - Alpha: 1
+      Autocompute Intensity Bounds: true
+      Axis: Z
+      Channel Name: intensity
+      Class: rviz_default_plugins/PointCloud2
+      Color: 150; 235; 170
+      Color Transformer: FlatColor
+      Decay Time: 0
+      Enabled: false
+      Invert Rainbow: false
+      Max Color: 255; 255; 255
+      Min Color: 0; 0; 0
+      Name: Selected Path
+      Position Transformer: XYZ
+      Queue Size: 10
+      Selectable: true
+      Size (Pixels): 7
+      Size (m): 0.004
+      Style: Spheres
+      Topic: /grasp/selected_path_cloud
+      Use Fixed Frame: true
+      Use rainbow: false
+      Value: false
   Global Options:
     Fixed Frame: world
   Tools:

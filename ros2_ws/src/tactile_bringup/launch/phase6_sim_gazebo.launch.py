@@ -7,6 +7,8 @@ from launch_ros.substitutions import FindPackageShare
 
 
 def generate_launch_description() -> LaunchDescription:
+    quiet_node_args = ["--ros-args", "--log-level", "warn"]
+
     default_param_file = PathJoinSubstitution(
         [FindPackageShare("tactile_bringup"), "config", "phase6_sim_gazebo.yaml"]
     )
@@ -106,7 +108,8 @@ def generate_launch_description() -> LaunchDescription:
         package="tactile_sim",
         executable="tactile_sim_node",
         name="tactile_sim_node",
-        output="screen",
+        output={"stdout": "log", "stderr": "log"},
+        arguments=quiet_node_args,
         parameters=[param_file],
     )
 
@@ -114,7 +117,8 @@ def generate_launch_description() -> LaunchDescription:
         package="tactile_sim",
         executable="arm_sim_driver_node",
         name="arm_sim_driver_node",
-        output="screen",
+        output={"stdout": "log", "stderr": "log"},
+        arguments=quiet_node_args,
         parameters=[param_file],
     )
 
@@ -122,7 +126,8 @@ def generate_launch_description() -> LaunchDescription:
         package="tactile_control",
         executable="arm_control_node",
         name="arm_control_node",
-        output="screen",
+        output={"stdout": "log", "stderr": "log"},
+        arguments=quiet_node_args,
         parameters=[param_file],
     )
 
@@ -130,7 +135,8 @@ def generate_launch_description() -> LaunchDescription:
         package="tactile_task",
         executable="demo_task_node",
         name="demo_task_node",
-        output="screen",
+        output={"stdout": "log", "stderr": "log"},
+        arguments=quiet_node_args,
         parameters=[param_file],
     )
 
@@ -138,7 +144,8 @@ def generate_launch_description() -> LaunchDescription:
         package="tactile_ui_bridge",
         executable="tactile_ui_subscriber",
         name="tactile_ui_subscriber",
-        output="screen",
+        output={"stdout": "log", "stderr": "log"},
+        arguments=quiet_node_args,
         parameters=[param_file],
     )
 

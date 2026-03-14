@@ -1,0 +1,24 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>tactile_task_cpp</name>
+  <version>0.1.0</version>
+  <description>C++ task nodes that execute MoveIt-based simulated manipulation demos.</description>
+  <maintainer email="whisp@users.noreply.github.com">whisp</maintainer>
+  <license>MIT</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <depend>geometry_msgs</depend>
+  <depend>interactive_markers</depend>
+  <depend>moveit_msgs</depend>
+  <depend>moveit_ros_planning_interface</depend>
+  <depend>rclcpp</depend>
+  <depend>shape_msgs</depend>
+  <depend>std_msgs</depend>
+  <depend>tactile_interfaces</depend>
+  <depend>visualization_msgs</depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

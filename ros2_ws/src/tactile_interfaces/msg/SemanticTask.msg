@@ -1,0 +1,11 @@
+std_msgs/Header header
+string task
+string target_label
+string target_hint
+string[] constraints
+string[] excluded_labels
+float32 confidence
+bool need_human_confirm
+string reason
+string prompt_text
+string raw_json

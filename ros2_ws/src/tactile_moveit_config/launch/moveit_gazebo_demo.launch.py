@@ -11,6 +11,8 @@ from moveit_configs_utils import MoveItConfigsBuilder
 
 
 def generate_launch_description() -> LaunchDescription:
+    quiet_node_args = ["--ros-args", "--log-level", "error"]
+
     default_world = PathJoinSubstitution(
         [FindPackageShare("tactile_sim"), "worlds", "phase6_tabletop_camera_gui.world"]
     )
@@ -38,7 +40,12 @@ def generate_launch_description() -> LaunchDescription:
     use_gpu_accel_arg = DeclareLaunchArgument(
         "use_gpu_accel",
         default_value="true",
-        description="Use WSLg D3D12 GPU acceleration for Gazebo rendering",
+        description="Use WSLg D3D12 GPU acceleration for the Gazebo GUI client.",
+    )
+    server_use_gpu_accel_arg = DeclareLaunchArgument(
+        "server_use_gpu_accel",
+        default_value="false",
+        description="Use GPU rendering on the Gazebo server. Keep false under WSLg when you need valid simulated depth images.",
     )
     world_arg = DeclareLaunchArgument(
         "world",
@@ -62,16 +69,41 @@ def generate_launch_description() -> LaunchDescription:
         default_value="8.0",
         description="Delay RViz and move_group until Gazebo clock and robot state are stable",
     )
+    start_search_demo_arg = DeclareLaunchArgument(
+        "start_search_demo",
+        default_value="false",
+        description="Start the simulated perception + joint1 search sweep demo",
+    )
+    search_start_delay_sec_arg = DeclareLaunchArgument(
+        "search_start_delay_sec",
+        default_value="12.0",
+        description="Delay perception/search nodes until Gazebo, TF and controllers are stable",
+    )
+    start_pick_demo_arg = DeclareLaunchArgument(
+        "start_pick_demo",
+        default_value="false",
+        description="Start the MoveIt-based simulated pick task demo",
+    )
+    pick_start_delay_sec_arg = DeclareLaunchArgument(
+        "pick_start_delay_sec",
+        default_value="16.0",
+        description="Delay the pick task until perception/search are publishing stable target data",
+    )
 
     start_sim = LaunchConfiguration("start_sim")
     start_gazebo_gui = LaunchConfiguration("start_gazebo_gui")
     start_rviz = LaunchConfiguration("start_rviz")
     use_sim_time = LaunchConfiguration("use_sim_time")
     use_gpu_accel = LaunchConfiguration("use_gpu_accel")
+    server_use_gpu_accel = LaunchConfiguration("server_use_gpu_accel")
     world = LaunchConfiguration("world")
     gpu_adapter = LaunchConfiguration("gpu_adapter")
     rviz_config = LaunchConfiguration("rviz_config")
     moveit_start_delay_sec = LaunchConfiguration("moveit_start_delay_sec")
+    start_search_demo = LaunchConfiguration("start_search_demo")
+    search_start_delay_sec = LaunchConfiguration("search_start_delay_sec")
+    start_pick_demo = LaunchConfiguration("start_pick_demo")
+    pick_start_delay_sec = LaunchConfiguration("pick_start_delay_sec")
 
     moveit_config = (
         MoveItConfigsBuilder("dofbot", package_name="tactile_moveit_config")
@@ -95,6 +127,7 @@ def generate_launch_description() -> LaunchDescription:
             "start_gui": start_gazebo_gui,
             "use_sim_time": use_sim_time,
             "use_gpu_accel": use_gpu_accel,
+            "server_use_gpu_accel": server_use_gpu_accel,
             "gpu_adapter": gpu_adapter,
         }.items(),
         condition=IfCondition(start_sim),
@@ -103,7 +136,8 @@ def generate_launch_description() -> LaunchDescription:
     move_group_node = Node(
         package="moveit_ros_move_group",
         executable="move_group",
-        output="screen",
+        output={"stdout": "log", "stderr": "log"},
+        arguments=quiet_node_args,
         parameters=[
             moveit_config.to_dict(),
             {
@@ -147,6 +181,58 @@ def generate_launch_description() -> LaunchDescription:
         ],
     )
 
+    target_pose_node = Node(
+        package="tactile_sim",
+        executable="sim_target_pose_node",
+        output="screen",
+        parameters=[
+            {
+                "target_frame": "world",
+            }
+        ],
+        condition=IfCondition(start_search_demo),
+    )
+
+    search_sweep_node = Node(
+        package="tactile_sim",
+        executable="sim_search_sweep_node",
+        output="screen",
+        parameters=[
+            {
+                "search_pose_deg": [-87.0, -72.0, 89.0, 89.0, -90.0],
+                "scan_joint1_angles_deg": [-90.0, -84.0, -78.0, -72.0],
+            }
+        ],
+        condition=IfCondition(start_search_demo),
+    )
+
+    delayed_search_demo = TimerAction(
+        period=search_start_delay_sec,
+        actions=[
+            target_pose_node,
+            search_sweep_node,
+        ],
+        condition=IfCondition(start_search_demo),
+    )
+
+    pick_task_node = Node(
+        package="tactile_task_cpp",
+        executable="sim_pick_task_node",
+        output="screen",
+        parameters=[
+            {
+                "use_sim_time": use_sim_time,
+            }
+        ],
+        condition=IfCondition(start_pick_demo),
+    )
+
+    delayed_pick_demo = TimerAction(
+        period=pick_start_delay_sec,
+        actions=[pick_task_node],
+        condition=IfCondition(start_pick_demo),
+    )
+
     return LaunchDescription(
         [
             start_sim_arg,
@@ -154,11 +240,18 @@ def generate_launch_description() -> LaunchDescription:
             start_rviz_arg,
             use_sim_time_arg,
             use_gpu_accel_arg,
+            server_use_gpu_accel_arg,
             world_arg,
             gpu_adapter_arg,
             rviz_config_arg,
             moveit_start_delay_sec_arg,
+            start_search_demo_arg,
+            search_start_delay_sec_arg,
+            start_pick_demo_arg,
+            pick_start_delay_sec_arg,
             sim_launch,
             delayed_moveit_stack,
+            delayed_search_demo,
+            delayed_pick_demo,
         ]
     )

@@ -1,0 +1,25 @@
+manual_pose_debug_node:
+  ros__parameters:
+    base_frame: "world"
+    arm_group: "arm"
+    ee_link: "ee_link"
+    home_named_target: "home"
+    move_to_home_before_test: false
+    execute_plan: false
+    auto_plan_on_mouse_up: true
+    plan_on_startup: false
+    initialize_target_from_named_target_pose: true
+    initialize_target_from_current_ee_pose: false
+    startup_delay_sec: 1.0
+    planning_time_sec: 5.0
+    planning_attempts: 10
+    velocity_scaling: 0.6
+    acceleration_scaling: 0.6
+    goal_position_tolerance_m: 0.01
+    goal_orientation_tolerance_rad: 0.10
+    interactive_marker_scale: 0.14
+    interactive_marker_namespace: "manual_pose_debug"
+    target_position_xyz: [0.180, 0.000, 0.240]
+    target_rpy_deg: [0.0, 90.0, 0.0]
+    target_pose_topic: "/debug/manual_pose/target_pose"
+    current_ee_pose_topic: "/debug/manual_pose/current_ee_pose"

@@ -80,7 +80,7 @@ class TactileUiSubscriber(Node):
             self._message_count += 1
 
         now = time.time()
-        if now - self._last_report >= self.report_interval_sec:
+        if self.report_interval_sec > 0.0 and now - self._last_report >= self.report_interval_sec:
             self._last_report = now
             mean_force = 0.0
             if snapshot.forces:
