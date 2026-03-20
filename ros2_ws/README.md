@@ -9,6 +9,7 @@ This workspace now includes:
 - phase 5: task orchestration (`/task/execute_demo` Action + pause/resume/stop services)
 - phase 6.1: vision ROS2 kickoff (`realsense_monitor_node` + `phase6_vision.launch.py`)
 - phase 6.2(base): simulation baseline chain (`tactile_sim` + `phase6_sim_base.launch.py`)
+- phase 6.3(shadow): local Qwen2.5-VL target selection shadow node (`/qwen/vision_result`)
 
 ## Workspace layout
 
@@ -174,6 +175,25 @@ Terminal B:
 ros2 node list | grep -E "realsense2_camera|realsense_monitor_node"
 ros2 topic hz /camera/camera/color/image_raw
 ros2 topic echo /system/health --once
+```
+
+## Run phase 6.3 (Qwen shadow mode)
+
+Start a local OpenAI-compatible Qwen2.5-VL endpoint first, then run:
+
+```bash
+ros2 launch tactile_bringup phase6_qwen_shadow.launch.py
+```
+
+The node subscribes to the relay color topic by default and publishes normalized
+JSON strings to:
+
+- `/qwen/vision_result`
+
+Optional operator prompt updates can be sent through:
+
+```bash
+ros2 topic pub --once /qwen/user_prompt std_msgs/msg/String "{data: 'Pick the nearest blue cylinder'}"
 ```
 
 ## Run phase 6.2 (simulation baseline kickoff)

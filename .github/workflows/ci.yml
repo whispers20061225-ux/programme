@@ -41,3 +41,40 @@ jobs:
           test -f docs/phase2_hardware_kickoff.md
           test -f docs/phase3_control_kickoff.md
           test -f docs/phase4_ui_bridge_kickoff.md
+
+  browser-regression:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ros2_ws/src/tactile_web_bridge/frontend
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: "npm"
+          cache-dependency-path: ros2_ws/src/tactile_web_bridge/frontend/package-lock.json
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Build frontend
+        run: npm run build
+
+      - name: Install Playwright browser
+        run: npx playwright install --with-deps chromium
+
+      - name: Run browser regression
+        run: npm run test:e2e
+
+      - name: Upload browser regression artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: browser-regression-artifacts
+          path: |
+            ros2_ws/src/tactile_web_bridge/frontend/playwright-report
+            ros2_ws/src/tactile_web_bridge/frontend/test-results

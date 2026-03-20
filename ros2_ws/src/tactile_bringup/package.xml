@@ -17,9 +17,11 @@
   <depend>tactile_control</depend>
   <depend>tactile_task</depend>
   <depend>tactile_ui_bridge</depend>
+  <depend>tactile_web_bridge</depend>
   <depend>tactile_vision</depend>
   <depend>tactile_vision_cpp</depend>
   <depend>tactile_sim</depend>
+  <depend>tactile_task_cpp</depend>
 
   <export>
     <build_type>ament_python</build_type>

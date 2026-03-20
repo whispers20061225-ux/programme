@@ -31,3 +31,16 @@ logs/
 ros2_ws/build/
 ros2_ws/install/
 ros2_ws/log/
+ros2_ws/.runtime/
+
+# Frontend dependencies / generated outputs
+ros2_ws/src/tactile_web_bridge/frontend/node_modules/
+ros2_ws/src/tactile_web_bridge/frontend/playwright-report/
+ros2_ws/src/tactile_web_bridge/frontend/test-results/
+ros2_ws/src/tactile_web_bridge/frontend/*.tsbuildinfo
+ros2_ws/src/tactile_web_bridge/frontend/vite.config.js
+ros2_ws/src/tactile_web_bridge/frontend/vite.config.d.ts
+
+# Local model artifacts
+ros2_ws/*.onnx
+ros2_ws/*.pt

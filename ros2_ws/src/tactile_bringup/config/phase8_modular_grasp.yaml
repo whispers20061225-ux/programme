@@ -1,0 +1,276 @@
+qwen_semantic_node:
+  ros__parameters:
+    prompt_topic: "/qwen/user_prompt"
+    semantic_task_topic: "/qwen/semantic_task"
+    semantic_result_topic: "/qwen/semantic_result"
+    color_topic: "/camera/camera/color/image_raw"
+    enabled: true
+    use_visual_context: false
+    auto_infer_on_start: false
+    model_endpoint: "http://127.0.0.1:8000/v1/chat/completions"
+    model_name: "Qwen/Qwen2.5-VL-3B-Instruct-AWQ"
+    api_key: "EMPTY"
+    request_timeout_sec: 20.0
+    max_inference_rate_hz: 0.5
+    temperature: 0.0
+    max_tokens: 256
+    resize_max_side_px: 1024
+    jpeg_quality: 90
+    default_task: "pick"
+    default_target_hint: "blue cylinder"
+    default_constraints: ["parallel_gripper"]
+    default_prompt: "Understand the operator's language input and convert it into a structured robotic pick task."
+    log_interval_sec: 10.0
+
+detector_seg_node:
+  ros__parameters:
+    color_topic: "/camera/camera/color/image_raw"
+    semantic_task_topic: "/qwen/semantic_task"
+    detection_result_topic: "/perception/detection_result"
+    candidate_visible_topic: "/sim/perception/target_candidate_visible"
+    enabled: true
+    backend: "ultralytics_local"
+    backend_url: ""
+    ultralytics_model_path: "yolo11s-seg.pt"
+    ultralytics_runtime_preference: "auto"
+    ultralytics_device: ""
+    ultralytics_imgsz: 640
+    request_timeout_sec: 10.0
+    max_inference_rate_hz: 2.0
+    confidence_threshold: 0.25
+    iou_threshold: 0.55
+    candidate_complete_edge_margin_px: 16
+    jpeg_quality: 90
+    semantic_match_confidence_floor: 0.05
+    vlm_relabel_enabled: true
+    vlm_relabel_endpoint: "http://127.0.0.1:8000/v1/chat/completions"
+    vlm_relabel_model_name: "Qwen/Qwen2.5-VL-3B-Instruct-AWQ"
+    vlm_relabel_request_timeout_sec: 20.0
+    vlm_relabel_top_k: 3
+    vlm_relabel_min_confidence: 0.05
+    vlm_relabel_crop_margin_px: 12
+    vlm_relabel_resize_max_side_px: 384
+    vlm_relabel_jpeg_quality: 88
+    vlm_relabel_cache_ttl_sec: 30.0
+    vlm_relabel_min_interval_sec: 0.75
+    vlm_relabel_track_cooldown_sec: 4.0
+    vlm_relabel_low_confidence_threshold: 0.35
+    vlm_relabel_ambiguous_labels: ["remote", "cup", "bottle", "can", "vase", "wine glass"]
+    track_iou_threshold: 0.20
+    track_center_distance_px: 120.0
+    track_stale_sec: 10.0
+    track_label_hold_sec: 2.0
+    track_stable_frames_required: 2
+    log_interval_sec: 10.0
+
+cloud_filter_node:
+  ros__parameters:
+    detection_result_topic: "/perception/detection_result"
+    semantic_task_topic: "/qwen/semantic_task"
+    depth_topic: "/camera/camera/aligned_depth_to_color/image_raw"
+    camera_info_topic: "/camera/camera/aligned_depth_to_color/camera_info"
+    target_cloud_topic: "/perception/target_cloud"
+    target_cloud_markers_topic: "/perception/target_cloud_markers"
+    target_pose_topic: "/sim/perception/target_pose"
+    target_locked_topic: "/sim/perception/target_locked"
+    candidate_visible_topic: "/sim/perception/target_candidate_visible"
+    debug_topic: "/perception/target_cloud_debug"
+    target_frame: "world"
+    enabled: true
+    publish_rate_hz: 4.0
+    detection_stale_sec: 4.0
+    min_depth_m: 0.10
+    max_depth_m: 2.00
+    bbox_margin_px: 12
+    min_target_points: 40
+    depth_percentile_low: 30.0
+    depth_band_m: 0.05
+    voxel_size_m: 0.004
+    open3d_remove_outliers: true
+    open3d_outlier_nb_neighbors: 16
+    open3d_outlier_std_ratio: 1.5
+    visual_republish_rate_hz: 8.0
+    stable_frames_required: 2
+    lock_position_tol_m: 0.03
+    require_semantic_task_to_lock: true
+    log_interval_sec: 8.0
+
+grasp_backend_node:
+  ros__parameters:
+    semantic_task_topic: "/qwen/semantic_task"
+    target_cloud_topic: "/perception/target_cloud"
+    detection_result_topic: "/perception/detection_result"
+    target_locked_topic: "/sim/perception/target_locked"
+    depth_topic: "/camera/camera/aligned_depth_to_color/image_raw"
+    camera_info_topic: "/camera/camera/aligned_depth_to_color/camera_info"
+    candidate_grasp_proposal_array_topic: "/grasp/candidate_grasp_proposals"
+    target_frame: "world"
+    backend: "contact_graspnet_http"
+    backend_url: "http://127.0.0.1:5001/infer"
+    request_timeout_sec: 12.0
+    max_inference_rate_hz: 1.0
+    sensor_stale_sec: 4.0
+    max_points: 2048
+    min_points_required: 64
+    publish_empty_on_failure: false
+    default_task_constraint_tag: "pick"
+    contact_graspnet_segmap_id: 1
+    contact_graspnet_local_regions: false
+    contact_graspnet_filter_grasps: true
+    contact_graspnet_skip_border_objects: false
+    contact_graspnet_forward_passes: 1
+    contact_graspnet_z_range: [0.20, 1.80]
+    contact_graspnet_depth_window_m: 0.12
+    contact_graspnet_roi_margin_px: 24
+    contact_graspnet_pregrasp_offset_m: 0.06
+    contact_graspnet_max_proposals: 0
+    contact_graspnet_min_mask_pixels: 96
+    contact_graspnet_visualize: false
+    request_signature_center_bin_px: 24
+    request_signature_size_bin_px: 24
+    request_signature_depth_bin_m: 0.02
+    ggcnn_repo_root: "/home/whispers/ggcnn"
+    ggcnn_checkpoint_path: "/home/whispers/ggcnn_weights/ggcnn2_weights_cornell/epoch_50_cornell_statedict.pt"
+    ggcnn_model: "ggcnn2"
+    ggcnn_device: ""
+    ggcnn_input_size: 300
+    ggcnn_top_k: 10
+    ggcnn_quality_threshold: 0.20
+    ggcnn_nms_radius_px: 20
+    ggcnn_bbox_margin_px: 20
+    ggcnn_min_mask_pixels: 96
+    ggcnn_pregrasp_offset_m: 0.06
+    visual_republish_rate_hz: 8.0
+    log_interval_sec: 8.0
+
+sim_search_sweep_node:
+  ros__parameters:
+    trajectory_action_name: "/joint_trajectory_controller/follow_joint_trajectory"
+    target_locked_topic: "/sim/perception/target_locked"
+    pick_active_topic: "/sim/task/pick_active"
+    candidate_visible_topic: "/sim/perception/target_candidate_visible"
+    detection_result_topic: "/perception/detection_result"
+    auto_start_enabled: false
+    joint_state_topic: "/joint_states"
+    search_pose_deg: [-87.0, -72.0, 89.0, 89.0, -90.0]
+    scan_joint1_angles_deg: [-90.0, -84.0, -78.0, -72.0]
+    startup_delay_sec: 4.0
+    motion_duration_sec: 1.0
+    settle_duration_sec: 0.5
+    joint1_min_deg: -180.0
+    joint1_max_deg: 180.0
+    stop_after_first_lock: false
+    enable_centering: true
+    vision_result_stale_sec: 3.0
+    horizontal_center_tolerance_px: 40.0
+    vertical_center_tolerance_px: 32.0
+    bbox_edge_margin_px: 36.0
+    centering_hold_sec: 0.6
+    centering_horizontal_gain_deg: 14.0
+    centering_vertical_gain_deg: 10.0
+    centering_max_joint1_step_deg: 10.0
+    centering_max_vertical_step_deg: 6.0
+    centering_min_step_deg: 1.0
+    centering_horizontal_sign: 1.0
+    centering_vertical_sign: 1.0
+    prefer_bbox_center: true
+    adaptive_centering_signs: false
+    vertical_joint_index: 3
+    vertical_joint_min_deg: 70.0
+    vertical_joint_max_deg: 110.0
+    target_session_lock_enabled: true
+    target_session_match_distance_px: 120.0
+    target_session_bbox_iou_threshold: 0.15
+    target_session_timeout_sec: 12.0
+
+sim_pick_task_node:
+  ros__parameters:
+    velocity_scaling: 1.0
+    acceleration_scaling: 1.0
+    gripper_velocity_scaling: 1.0
+    gripper_acceleration_scaling: 1.0
+    debug_stop_after_pregrasp: false
+    debug_execute_ranked_candidates: false
+    debug_ranked_candidate_limit: 12
+    debug_return_named_target: "home"
+    enforce_upright_orientation: true
+    lock_joint_after_target_lock: false
+    lock_joint_name: "arm_joint1"
+    lock_joint_max_delta_deg: 180.0
+    lock_joint_relaxed_delta_deg: 180.0
+    lock_wrist_joint_after_target_lock: true
+    wrist_joint_name: "arm_joint5"
+    wrist_joint_max_delta_deg: 90.0
+    wrist_joint_relaxed_delta_deg: 90.0
+    camera_scoring_link: "camera_depth_optical_frame"
+    camera_forward_alignment_threshold: 0.60
+    camera_upright_alignment_threshold: 0.0
+    camera_forward_penalty_weight: 10.0
+    camera_upright_penalty_weight: 14.0
+    camera_trajectory_tilt_penalty_weight: 10.0
+    camera_flip_penalty_weight: 20.0
+    camera_stable_tilt_reward_deg: 5.0
+    camera_stable_reward_bonus: 2.5
+    pregrasp_score_base: 30.0
+    pregrasp_score_floor: 1.0
+    plan_duration_penalty_weight: 1.8
+    path_distance_penalty_weight: 6.0
+    approach_distance_penalty_weight: 4.0
+    primary_joint_delta_penalty_weight: 2.6
+    wrist_joint_delta_penalty_weight: 0.0
+    primary_joint_excursion_penalty_weight: 8.5
+    secondary_joint_name: "arm_joint2"
+    secondary_joint_excursion_penalty_weight: 0.0
+    wrist_joint_excursion_penalty_weight: 0.0
+    clearance_penalty_weight: 6.0
+    grasp_base_roll_deg: 0.0
+    grasp_base_pitch_deg: 90.0
+    grasp_yaw_offset_deg: 0.0
+    prefer_external_grasp_candidates: true
+    require_external_grasp_candidates: true
+    include_target_collision_object: false
+    external_grasp_pose_timeout_sec: 3.5
+    external_grasp_proposal_array_topic: "/grasp/candidate_grasp_proposals"
+    execution_debug_markers_topic: "/grasp/execution_debug_markers"
+    pick_status_topic: "/sim/task/pick_status"
+    execute_pick_service: "/task/execute_pick"
+    reset_pick_session_service: "/task/reset_pick_session"
+    require_user_confirmation: true
+    external_semantic_score_weight: 0.8
+    external_confidence_score_weight: 0.6
+    selected_pregrasp_pose_topic: "/grasp/selected_pregrasp_pose"
+    selected_grasp_pose_topic: "/grasp/selected_grasp_pose"
+    external_pregrasp_pose_array_topic: "/grasp/candidate_pregrasp_poses"
+    external_grasp_pose_array_topic: "/grasp/candidate_grasp_poses"
+
+tactile_web_gateway:
+  ros__parameters:
+    host: "127.0.0.1"
+    port: 8765
+    prompt_topic: "/qwen/user_prompt"
+    semantic_task_topic: "/qwen/semantic_task"
+    semantic_result_topic: "/qwen/semantic_result"
+    color_topic: "/camera/camera/color/image_raw"
+    detection_result_topic: "/perception/detection_result"
+    detection_debug_topic: "/perception/detection_debug"
+    detection_debug_overlay_topic: "/perception/detection_debug_overlay"
+    target_locked_topic: "/sim/perception/target_locked"
+    pick_active_topic: "/sim/task/pick_active"
+    pick_status_topic: "/sim/task/pick_status"
+    candidate_grasp_proposal_array_topic: "/grasp/candidate_grasp_proposals"
+    grasp_backend_debug_topic: "/grasp/backend_debug"
+    grasp_overlay_topic: "/grasp/ggcnn/grasp_overlay"
+    tactile_topic: "/tactile/raw"
+    health_topic: "/system/health"
+    arm_state_topic: "/arm/state"
+    execute_pick_service: "/task/execute_pick"
+    reset_pick_session_service: "/task/reset_pick_session"
+    dialog_use_visual_context: true
+    dialog_visual_input_mode: "annotated"
+    dialog_visual_max_side_px: 896
+    dialog_visual_jpeg_quality: 85
+    dialog_visual_focus_timeout_sec: 20.0
+    dialog_default_reply_language: "zh"
+    default_task: "pick"
+    default_target_hint: "blue cylinder"
+    default_constraints: ["parallel_gripper"]

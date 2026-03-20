@@ -20,8 +20,8 @@ arm_sim_driver_node:
     arm_num_joints: 6
     command_default_duration_ms: 1000
     home_duration_ms: 3500
-    home_joint_angles: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
-    initial_joint_angles: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    home_joint_angles: [3.0, -72.0, 89.0, 89.0, 0.0, 0.0]
+    initial_joint_angles: [3.0, -72.0, 89.0, 89.0, 0.0, 0.0]
     joint_zero_offsets_deg: [-90.0, 0.0, 0.0, 0.0, -90.0, 0.0]
     joint_names: ["arm_joint1", "arm_joint2", "arm_joint3", "arm_joint4", "arm_joint5", "grip_joint"]
     enforce_angle_limits: true
@@ -83,4 +83,4 @@ tactile_ui_subscriber:
   ros__parameters:
     tactile_topic: "/tactile/raw"
     health_topic: "/system/health"
-    report_interval_sec: 2.0
+    report_interval_sec: 0.0

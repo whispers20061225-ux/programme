@@ -58,6 +58,8 @@ setup(
             "tactile_sim_node = tactile_sim.tactile_sim_node:main",
             "arm_sim_driver_node = tactile_sim.arm_sim_driver_node:main",
             "sim_realsense_adapter_node = tactile_sim.sim_realsense_adapter_node:main",
+            "sim_target_pose_node = tactile_sim.sim_target_pose_node:main",
+            "sim_search_sweep_node = tactile_sim.sim_search_sweep_node:main",
         ],
     },
 )

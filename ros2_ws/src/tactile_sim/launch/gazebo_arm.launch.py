@@ -3,26 +3,32 @@ import os
 from launch import LaunchDescription
 from launch.actions import (
     DeclareLaunchArgument,
-    IncludeLaunchDescription,
+    EmitEvent,
+    ExecuteProcess,
+    LogInfo,
     RegisterEventHandler,
     SetEnvironmentVariable,
     TimerAction,
 )
 from launch.conditions import IfCondition, UnlessCondition
+from launch.events import Shutdown
 from launch.event_handlers import OnProcessExit
-from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import (
     Command,
     EnvironmentVariable,
     FindExecutable,
     LaunchConfiguration,
     PathJoinSubstitution,
+    PythonExpression,
 )
 from launch_ros.actions import Node
 from launch_ros.substitutions import FindPackageShare
 
 
 def generate_launch_description() -> LaunchDescription:
+    quiet_node_args = ["--ros-args", "--log-level", "warn"]
+    node_respawn_kwargs = {"respawn": True, "respawn_delay": 2.0}
+
     default_world = PathJoinSubstitution(
         [FindPackageShare("tactile_sim"), "worlds", "phase6_tabletop.world"]
     )
@@ -153,7 +159,12 @@ def generate_launch_description() -> LaunchDescription:
     use_gpu_accel_arg = DeclareLaunchArgument(
         "use_gpu_accel",
         default_value="true",
-        description="Use WSLg D3D12 OpenGL acceleration for Gazebo rendering",
+        description="Use WSLg D3D12 OpenGL acceleration for the Gazebo GUI client",
+    )
+    server_use_gpu_accel_arg = DeclareLaunchArgument(
+        "server_use_gpu_accel",
+        default_value="false",
+        description="Use GPU rendering on the Gazebo server. Keep false under WSLg when you need valid depth camera images.",
     )
     gpu_adapter_arg = DeclareLaunchArgument(
         "gpu_adapter",
@@ -188,6 +199,7 @@ def generate_launch_description() -> LaunchDescription:
     ros_gyro_topic = LaunchConfiguration("ros_gyro_topic")
     ros_accel_topic = LaunchConfiguration("ros_accel_topic")
     use_gpu_accel = LaunchConfiguration("use_gpu_accel")
+    server_use_gpu_accel = LaunchConfiguration("server_use_gpu_accel")
     gpu_adapter = LaunchConfiguration("gpu_adapter")
     tactile_sim_share = FindPackageShare("tactile_sim")
     tactile_bringup_share = FindPackageShare("tactile_bringup")
@@ -210,6 +222,14 @@ def generate_launch_description() -> LaunchDescription:
             EnvironmentVariable("GZ_SIM_RESOURCE_PATH", default_value=""),
         ],
     )
+    set_gz_system_plugin_path = SetEnvironmentVariable(
+        name="GZ_SIM_SYSTEM_PLUGIN_PATH",
+        value=[
+            EnvironmentVariable("GZ_SIM_SYSTEM_PLUGIN_PATH", default_value=""),
+            os.pathsep,
+            EnvironmentVariable("LD_LIBRARY_PATH", default_value=""),
+        ],
+    )
     set_ign_resource_path = SetEnvironmentVariable(
         name="IGN_GAZEBO_RESOURCE_PATH",
         value=[
@@ -220,39 +240,117 @@ def generate_launch_description() -> LaunchDescription:
             EnvironmentVariable("IGN_GAZEBO_RESOURCE_PATH", default_value=""),
         ],
     )
-    set_libgl_software = SetEnvironmentVariable(
-        name="LIBGL_ALWAYS_SOFTWARE",
-        value=["0"],
-        condition=IfCondition(use_gpu_accel),
-    )
-    set_gallium_driver = SetEnvironmentVariable(
-        name="GALLIUM_DRIVER",
-        value=["d3d12"],
-        condition=IfCondition(use_gpu_accel),
-    )
-    set_mesa_adapter = SetEnvironmentVariable(
-        name="MESA_D3D12_DEFAULT_ADAPTER_NAME",
-        value=[gpu_adapter],
-        condition=IfCondition(use_gpu_accel),
+
+    gazebo_server_gpu = ExecuteProcess(
+        cmd=[
+            FindExecutable(name="gz"),
+            "sim",
+            "-r",
+            "-s",
+            world,
+            "--force-version",
+            "8",
+        ],
+        name="gazebo",
+        output={"stdout": "log", "stderr": "log"},
+        additional_env={
+            "LIBGL_ALWAYS_SOFTWARE": "0",
+            "GALLIUM_DRIVER": "d3d12",
+            "MESA_D3D12_DEFAULT_ADAPTER_NAME": gpu_adapter,
+        },
+        condition=IfCondition(server_use_gpu_accel),
     )
 
-    gazebo_headless_launch = IncludeLaunchDescription(
-        PythonLaunchDescriptionSource(
-            PathJoinSubstitution(
-                [FindPackageShare("ros_gz_sim"), "launch", "gz_sim.launch.py"]
-            )
-        ),
-        launch_arguments={"gz_args": ["-r -s ", world]}.items(),
-        condition=UnlessCondition(start_gui),
+    gazebo_server_cpu = ExecuteProcess(
+        cmd=[
+            FindExecutable(name="gz"),
+            "sim",
+            "-r",
+            "-s",
+            world,
+            "--force-version",
+            "8",
+        ],
+        name="gazebo",
+        output={"stdout": "log", "stderr": "log"},
+        additional_env={
+            "LIBGL_ALWAYS_SOFTWARE": "1",
+            "GALLIUM_DRIVER": "llvmpipe",
+            "MESA_D3D12_DEFAULT_ADAPTER_NAME": "",
+        },
+        condition=UnlessCondition(server_use_gpu_accel),
     )
 
-    gazebo_gui_launch = IncludeLaunchDescription(
-        PythonLaunchDescriptionSource(
-            PathJoinSubstitution(
-                [FindPackageShare("ros_gz_sim"), "launch", "gz_sim.launch.py"]
+    restart_on_gazebo_server_gpu_exit = RegisterEventHandler(
+        OnProcessExit(
+            target_action=gazebo_server_gpu,
+            on_exit=[
+                LogInfo(msg="gazebo server exited; shutting down launch so the supervisor can restart the full stack"),
+                EmitEvent(event=Shutdown(reason="gazebo server exited")),
+            ],
+        )
+    )
+
+    restart_on_gazebo_server_cpu_exit = RegisterEventHandler(
+        OnProcessExit(
+            target_action=gazebo_server_cpu,
+            on_exit=[
+                LogInfo(msg="gazebo server exited; shutting down launch so the supervisor can restart the full stack"),
+                EmitEvent(event=Shutdown(reason="gazebo server exited")),
+            ],
+        )
+    )
+
+    gazebo_gui_gpu = ExecuteProcess(
+        cmd=[
+            FindExecutable(name="gz"),
+            "sim",
+            "-g",
+            "--force-version",
+            "8",
+        ],
+        name="gazebo_gui",
+        output={"stdout": "log", "stderr": "log"},
+        additional_env={
+            "LIBGL_ALWAYS_SOFTWARE": "0",
+            "GALLIUM_DRIVER": "d3d12",
+            "MESA_D3D12_DEFAULT_ADAPTER_NAME": gpu_adapter,
+        },
+        condition=IfCondition(
+            PythonExpression(
+                ["'", start_gui, "' == 'true' and '", use_gpu_accel, "' == 'true'"]
             )
         ),
-        launch_arguments={"gz_args": ["-r ", world]}.items(),
+    )
+
+    gazebo_gui_cpu = ExecuteProcess(
+        cmd=[
+            FindExecutable(name="gz"),
+            "sim",
+            "-g",
+            "--force-version",
+            "8",
+        ],
+        name="gazebo_gui",
+        output={"stdout": "log", "stderr": "log"},
+        additional_env={
+            "LIBGL_ALWAYS_SOFTWARE": "1",
+            "GALLIUM_DRIVER": "llvmpipe",
+            "MESA_D3D12_DEFAULT_ADAPTER_NAME": "",
+        },
+        condition=IfCondition(
+            PythonExpression(
+                ["'", start_gui, "' == 'true' and '", use_gpu_accel, "' != 'true'"]
+            )
+        ),
+    )
+
+    delayed_gazebo_gui = TimerAction(
+        period=1.0,
+        actions=[
+            gazebo_gui_gpu,
+            gazebo_gui_cpu,
+        ],
         condition=IfCondition(start_gui),
     )
 
@@ -262,20 +360,22 @@ def generate_launch_description() -> LaunchDescription:
         package="robot_state_publisher",
         executable="robot_state_publisher",
         name="robot_state_publisher",
-        output="screen",
+        output={"stdout": "log", "stderr": "log"},
+        arguments=quiet_node_args,
         parameters=[
             {
                 "robot_description": robot_description,
                 "use_sim_time": use_sim_time,
             }
         ],
+        **node_respawn_kwargs,
     )
 
     spawn_entity = Node(
         package="ros_gz_sim",
         executable="create",
         name="spawn_dofbot",
-        output="screen",
+        output={"stdout": "log", "stderr": "log"},
         arguments=[
             "-name",
             entity_name,
@@ -287,72 +387,79 @@ def generate_launch_description() -> LaunchDescription:
             spawn_y,
             "-z",
             spawn_z,
-        ],
+        ] + quiet_node_args,
     )
 
     clock_bridge = Node(
         package="ros_gz_bridge",
         executable="parameter_bridge",
         name="clock_bridge",
-        output="screen",
+        output={"stdout": "log", "stderr": "log"},
         arguments=[
             ["/world/", world_name, "/clock@rosgraph_msgs/msg/Clock[gz.msgs.Clock"],
             "--ros-args",
+            "--log-level",
+            "warn",
             "-r",
             ["/world/", world_name, "/clock:=/clock"],
         ],
         condition=IfCondition(bridge_clock),
+        **node_respawn_kwargs,
     )
 
     camera_bridge = Node(
         package="ros_gz_bridge",
         executable="parameter_bridge",
         name="wrist_rgb_camera_bridge",
-        output="screen",
+        output={"stdout": "log", "stderr": "log"},
         arguments=[
             "/camera@sensor_msgs/msg/Image@gz.msgs.Image",
             "/camera_info@sensor_msgs/msg/CameraInfo@gz.msgs.CameraInfo",
-        ],
+        ] + quiet_node_args,
         remappings=[
             ("/camera", ros_camera_topic),
             ("/camera_info", ros_camera_info_topic),
         ],
         condition=IfCondition(bridge_camera),
+        **node_respawn_kwargs,
     )
 
     depth_bridge = Node(
         package="ros_gz_bridge",
         executable="parameter_bridge",
         name="wrist_depth_camera_bridge",
-        output="screen",
+        output={"stdout": "log", "stderr": "log"},
         arguments=[
             "/camera_depth@sensor_msgs/msg/Image@gz.msgs.Image",
-        ],
+        ] + quiet_node_args,
         remappings=[
             ("/camera_depth", "/sim/camera/depth/image_raw"),
         ],
         condition=IfCondition(bridge_depth),
+        **node_respawn_kwargs,
     )
 
     imu_bridge = Node(
         package="ros_gz_bridge",
         executable="parameter_bridge",
         name="wrist_imu_bridge",
-        output="screen",
+        output={"stdout": "log", "stderr": "log"},
         arguments=[
             "/camera_imu@sensor_msgs/msg/Imu@gz.msgs.IMU",
-        ],
+        ] + quiet_node_args,
         remappings=[
             ("/camera_imu", "/sim/camera/imu"),
         ],
         condition=IfCondition(bridge_imu),
+        **node_respawn_kwargs,
     )
 
     sim_realsense_adapter = Node(
         package="tactile_sim",
         executable="sim_realsense_adapter_node",
         name="sim_realsense_adapter_node",
-        output="screen",
+        output={"stdout": "log", "stderr": "log"},
+        arguments=quiet_node_args,
         parameters=[
             {
                 "use_sim_time": use_sim_time,
@@ -374,34 +481,35 @@ def generate_launch_description() -> LaunchDescription:
             }
         ],
         condition=IfCondition(start_realsense_adapter),
+        **node_respawn_kwargs,
     )
 
     spawner_joint_state = Node(
         package="controller_manager",
         executable="spawner",
         name="spawner_joint_state_broadcaster",
-        output="screen",
+        output={"stdout": "log", "stderr": "log"},
         arguments=[
             "joint_state_broadcaster",
             "--controller-manager",
             "/controller_manager",
             "--controller-manager-timeout",
             "120",
-        ],
+        ] + quiet_node_args,
     )
 
     spawner_joint_trajectory = Node(
         package="controller_manager",
         executable="spawner",
         name="spawner_joint_trajectory_controller",
-        output="screen",
+        output="log",
         arguments=[
             "joint_trajectory_controller",
             "--controller-manager",
             "/controller_manager",
             "--controller-manager-timeout",
             "120",
-        ],
+        ] + quiet_node_args,
     )
 
     delay_joint_state = RegisterEventHandler(
@@ -457,15 +565,17 @@ def generate_launch_description() -> LaunchDescription:
             ros_gyro_topic_arg,
             ros_accel_topic_arg,
             use_gpu_accel_arg,
+            server_use_gpu_accel_arg,
             gpu_adapter_arg,
             sanitize_ld_library_path,
             set_gz_resource_path,
+            set_gz_system_plugin_path,
             set_ign_resource_path,
-            set_libgl_software,
-            set_gallium_driver,
-            set_mesa_adapter,
-            gazebo_headless_launch,
-            gazebo_gui_launch,
+            gazebo_server_gpu,
+            gazebo_server_cpu,
+            restart_on_gazebo_server_gpu_exit,
+            restart_on_gazebo_server_cpu_exit,
+            delayed_gazebo_gui,
             clock_bridge,
             delayed_robot_pipeline,
             delay_joint_state,
