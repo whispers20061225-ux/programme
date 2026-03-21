@@ -142,3 +142,10 @@ export async function postExecute(): Promise<UiState> {
   });
   return response.state;
 }
+
+export async function postReturnHome(): Promise<UiState> {
+  const response = await requestJson<{ ok: boolean; state: UiState }>("/api/execution/return-home", {
+    method: "POST",
+  });
+  return response.state;
+}

@@ -11,7 +11,7 @@ import type {
 
 export type StreamMap = BootstrapResponse["streams"];
 export type StreamName = keyof StreamMap;
-export type BusyAction = "dialog" | "execute" | "replan" | "dialog-reset" | null;
+export type BusyAction = "dialog" | "execute" | "replan" | "dialog-reset" | "return-home" | null;
 export type InterventionState = "idle" | "draft" | "applied";
 export type PillTone = UiLevel | "success" | "neutral";
 

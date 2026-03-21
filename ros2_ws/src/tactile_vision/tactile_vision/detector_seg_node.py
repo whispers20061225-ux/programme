@@ -68,6 +68,33 @@ DEFAULT_VLM_AMBIGUOUS_LABELS = {
     "wine glass",
 }
 
+APPEARANCE_HINT_TOKENS = {
+    "block",
+    "cylinder",
+    "cylindrical",
+    "handle",
+    "paper",
+    "plastic",
+    "rectangular",
+    "round",
+    "silver",
+    "tool",
+    "tube",
+}
+
+GENERIC_VLM_LABELS = {
+    "container",
+    "cup",
+    "bottle",
+    "can",
+    "object",
+    "item",
+    "thing",
+    "tool",
+    "vase",
+    "wine glass",
+}
+
 
 class DetectorSegNode(Node):
     def __init__(self) -> None:
@@ -857,10 +884,19 @@ class DetectorSegNode(Node):
             or ""
         )
 
+    def _candidate_has_vlm_label(self, candidate: Optional[dict[str, Any]]) -> bool:
+        if not isinstance(candidate, dict):
+            return False
+        source = str(candidate.get("label_source", "") or "").strip().lower()
+        return source in {"vlm", "vlm_track"}
+
     def _candidate_semantic_texts(self, candidate: dict[str, Any]) -> list[str]:
         seen: set[str] = set()
         texts: list[str] = []
-        for key in ("canonical_label", "label_zh", "display_label", "label", "raw_label"):
+        keys = ["canonical_label", "label_zh", "display_label"]
+        if not self._candidate_has_vlm_label(candidate):
+            keys.extend(["label", "raw_label"])
+        for key in keys:
             text = self._normalize_short_label(candidate.get(key, ""))
             lowered = text.lower()
             if not lowered or lowered in seen:
@@ -1149,7 +1185,12 @@ class DetectorSegNode(Node):
         seen: set[str] = set()
         texts: list[str] = []
         for source in (track, candidate or {}):
-            for key in ("canonical_label", "label_zh", "display_label", "raw_label", "label"):
+            keys = ["canonical_label", "label_zh", "display_label"]
+            if source is candidate and not self._candidate_has_vlm_label(candidate):
+                keys.extend(["raw_label", "label"])
+            elif source is track and not self._track_has_vlm_label(track):
+                keys.extend(["raw_label", "label"])
+            for key in keys:
                 text = self._normalize_short_label(source.get(key, ""))
                 lowered = text.lower()
                 if not lowered or lowered in seen:
@@ -1175,6 +1216,85 @@ class DetectorSegNode(Node):
         label = self._normalized_label_key(label_text)
         return bool(label and label in self.vlm_relabel_ambiguous_labels)
 
+    def _label_specificity_score(self, label_text: Any) -> float:
+        normalized = self._normalized_label_key(label_text)
+        if not normalized:
+            return 0.0
+        tokens = self._semantic_tokens(normalized)
+        score = min(1.4, 0.35 * len(tokens))
+        if any(token in COLOR_HINT_TOKENS for token in tokens):
+            score += 0.8
+        if any(token in APPEARANCE_HINT_TOKENS for token in tokens):
+            score += 0.8
+        if not self._is_ambiguous_label(normalized):
+            score += 0.4
+        return score
+
+    def _should_preserve_existing_vlm_label(
+        self,
+        track: dict[str, Any],
+        new_canonical_label: str,
+        raw_label: str,
+    ) -> bool:
+        if not self._track_has_vlm_label(track):
+            return False
+        previous_canonical = self._normalize_short_label(track.get("canonical_label"))
+        if not previous_canonical:
+            return False
+        candidate_label = self._normalize_short_label(new_canonical_label or raw_label)
+        if not candidate_label:
+            return True
+        previous_specificity = self._label_specificity_score(previous_canonical)
+        candidate_specificity = self._label_specificity_score(candidate_label)
+        if (
+            not self._is_ambiguous_label(previous_canonical)
+            and self._is_ambiguous_label(candidate_label)
+            and previous_specificity >= candidate_specificity
+        ):
+            return True
+        if (
+            self._normalized_label_key(candidate_label) == self._normalized_label_key(raw_label)
+            and previous_specificity > candidate_specificity
+        ):
+            return True
+        return False
+
+    def _label_needs_refinement(self, label_text: Any, *, raw_label: Any = "") -> bool:
+        normalized = self._normalized_label_key(label_text)
+        if not normalized:
+            return True
+        if normalized == self._normalized_label_key(raw_label):
+            return True
+        if normalized in GENERIC_VLM_LABELS:
+            return True
+        if self._is_ambiguous_label(normalized):
+            return True
+        tokens = self._semantic_tokens(normalized)
+        has_color = any(token in COLOR_HINT_TOKENS for token in tokens)
+        has_shape = any(token in APPEARANCE_HINT_TOKENS for token in tokens)
+        if len(tokens) <= 1 and not (has_color or has_shape):
+            return True
+        return False
+
+    def _track_vlm_label_needs_refinement(
+        self,
+        track: dict[str, Any],
+        candidate: Optional[dict[str, Any]] = None,
+    ) -> bool:
+        if not self._track_has_vlm_label(track):
+            return True
+        raw_label = ""
+        if isinstance(candidate, dict):
+            raw_label = self._normalize_short_label(candidate.get("raw_label") or candidate.get("label"))
+        if not raw_label:
+            raw_label = self._normalize_short_label(track.get("raw_label"))
+        canonical_label = self._normalize_short_label(track.get("canonical_label"))
+        display_label = self._normalize_short_label(track.get("display_label"))
+        return (
+            self._label_needs_refinement(canonical_label, raw_label=raw_label)
+            and self._label_needs_refinement(display_label, raw_label=raw_label)
+        )
+
     def _track_relabel_reason(
         self,
         track: dict[str, Any],
@@ -1194,6 +1314,7 @@ class DetectorSegNode(Node):
             and semantic_signature != str(track.get("last_semantic_signature", "") or "")
         )
         has_vlm_label = self._track_has_vlm_label(track)
+        needs_vlm_refinement = self._track_vlm_label_needs_refinement(track, candidate)
         is_ambiguous = self._is_ambiguous_label(
             candidate.get("raw_label") or candidate.get("label") or track.get("raw_label")
         )
@@ -1212,8 +1333,10 @@ class DetectorSegNode(Node):
             or not self._track_matches_semantic_target(track, semantic_task, candidate)
         ):
             return "semantic_target"
-        if is_ambiguous and (not has_vlm_label or semantic_changed):
+        if is_ambiguous and (not has_vlm_label or semantic_changed or needs_vlm_refinement):
             return "ambiguous_raw_label"
+        if has_vlm_label and needs_vlm_refinement and is_geometrically_stable:
+            return "refine_vlm_label"
         if is_low_confidence and is_geometrically_stable and (not has_vlm_label or semantic_changed):
             return "low_confidence_stable"
         if bool(candidate.get("track_new")) and not has_vlm_label:
@@ -1228,6 +1351,7 @@ class DetectorSegNode(Node):
         base = {
             "semantic_target": 4.0,
             "ambiguous_raw_label": 3.0,
+            "refine_vlm_label": 2.5,
             "low_confidence_stable": 2.0,
             "new_track": 1.0,
         }.get(reason, 0.0)
@@ -1335,6 +1459,8 @@ class DetectorSegNode(Node):
             "Ignore the detector raw label if it looks wrong. "
             "If you are not clearly confident in a standard object class, describe the visible object by appearance instead: "
             "blue cylinder, white paper cup, white block, black tool handle, silver can. "
+            "Prefer color-plus-shape descriptions over generic class guesses. "
+            "If the object looks like a smooth cylinder and you cannot clearly see a cup rim, handle, bottle neck, or can top, label it as cylinder instead of cup, bottle, vase, or can. "
             "Do not answer with vague words like object, item, thing. "
             "Do not use dataset artifacts like remote, mouse, keyboard, cell phone unless the visible features clearly support that label."
         )
@@ -1446,11 +1572,17 @@ class DetectorSegNode(Node):
                     if not isinstance(track, dict):
                         continue
                     item = relabeled.get(int(spec["index"]), {})
-                    canonical_label = self._normalize_short_label(
-                        item.get("canonical_label") or spec.get("raw_label")
-                    )
-                    label_zh = self._normalize_short_label(item.get("label_zh"))
                     raw_label = self._normalize_short_label(spec.get("raw_label"))
+                    canonical_label = self._normalize_short_label(item.get("canonical_label"))
+                    label_zh = self._normalize_short_label(item.get("label_zh"))
+                    if self._should_preserve_existing_vlm_label(track, canonical_label, raw_label):
+                        canonical_label = self._normalize_short_label(track.get("canonical_label"))
+                        label_zh = self._normalize_short_label(track.get("label_zh"))
+                    elif not canonical_label and self._track_has_vlm_label(track):
+                        canonical_label = self._normalize_short_label(track.get("canonical_label"))
+                        label_zh = self._normalize_short_label(track.get("label_zh"))
+                    elif not canonical_label:
+                        canonical_label = raw_label
                     display_label = self._compose_candidate_display_label(
                         canonical_label=canonical_label or raw_label,
                         label_zh=label_zh,
@@ -1478,6 +1610,24 @@ class DetectorSegNode(Node):
             with self._vlm_relabel_lock:
                 self._vlm_relabel_in_flight = False
             self._pending_request = True
+
+    def _rollback_pending_track_relabels(
+        self,
+        specs: list[dict[str, Any]],
+    ) -> None:
+        if not specs:
+            return
+        with self._track_lock:
+            for spec in specs:
+                track_id = int(spec.get("track_id", -1))
+                track = self._tracks.get(track_id)
+                if not isinstance(track, dict):
+                    continue
+                track["relabel_in_flight"] = False
+                track["last_relabel_requested_at"] = float(
+                    spec.get("previous_relabel_requested_at", 0.0) or 0.0
+                )
+                track["last_relabel_reason"] = str(spec.get("previous_relabel_reason", "") or "")
 
     def _schedule_candidate_relabels(
         self,
@@ -1536,6 +1686,8 @@ class DetectorSegNode(Node):
                     "data:image/jpeg;base64,"
                     f"{encode_image_to_base64_jpeg(crop_rgb, self.vlm_relabel_jpeg_quality)}"
                 )
+                previous_requested_at = float(active_track.get("last_relabel_requested_at", 0.0) or 0.0)
+                previous_reason = str(active_track.get("last_relabel_reason", "") or "")
                 active_track["relabel_in_flight"] = True
                 active_track["last_relabel_requested_at"] = now_sec
                 active_track["last_relabel_reason"] = str(reason or "")
@@ -1550,6 +1702,8 @@ class DetectorSegNode(Node):
                         "image_url": image_url,
                         "relabel_reason": str(reason or ""),
                         "semantic_signature": semantic_signature,
+                        "previous_relabel_requested_at": previous_requested_at,
+                        "previous_relabel_reason": previous_reason,
                     }
                 )
                 pending_candidates.append(candidate)
@@ -1566,17 +1720,25 @@ class DetectorSegNode(Node):
             )
         with self._vlm_relabel_lock:
             if self._vlm_relabel_in_flight:
+                self._rollback_pending_track_relabels(pending_specs)
                 return
             if (time.time() - self._vlm_relabel_last_started) < self.vlm_relabel_min_interval_sec:
+                self._rollback_pending_track_relabels(pending_specs)
                 return
             self._vlm_relabel_in_flight = True
             self._vlm_relabel_last_started = time.time()
 
-        threading.Thread(
-            target=self._run_vlm_relabel_batch,
-            args=(pending_specs, overview_image_url),
-            daemon=True,
-        ).start()
+        try:
+            threading.Thread(
+                target=self._run_vlm_relabel_batch,
+                args=(pending_specs, overview_image_url),
+                daemon=True,
+            ).start()
+        except Exception:  # noqa: BLE001
+            self._rollback_pending_track_relabels(pending_specs)
+            with self._vlm_relabel_lock:
+                self._vlm_relabel_in_flight = False
+            raise
 
     def _semantic_payload(self, semantic_task: Optional[SemanticTask]) -> dict[str, Any]:
         return {

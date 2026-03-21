@@ -1,13 +1,18 @@
 <?xml version="1.0"?>
 <robot name="yahboom_dofbot" xmlns:xacro="http://www.ros.org/wiki/xacro">
   <xacro:property name="mesh_root" value="file://$(find tactile_sim)/meshes"/>
+  <xacro:arg name="base_world_x" default="0.0"/>
+  <xacro:arg name="base_world_y" default="0.0"/>
+  <xacro:arg name="base_world_z" default="0.0"/>
 
   <link name="world"/>
 
   <joint name="world_to_base" type="fixed">
     <parent link="world"/>
     <child link="base_link"/>
-    <origin xyz="0 0 0" rpy="0 0 -1.57079632679"/>
+    <origin
+      xyz="$(arg base_world_x) $(arg base_world_y) $(arg base_world_z)"
+      rpy="0 0 -1.57079632679"/>
   </joint>
 
   <link name="base_link">

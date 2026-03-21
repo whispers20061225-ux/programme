@@ -72,17 +72,18 @@ cloud_filter_node:
     target_cloud_topic: "/perception/target_cloud"
     target_cloud_markers_topic: "/perception/target_cloud_markers"
     target_pose_topic: "/sim/perception/target_pose"
+    target_pose_camera_topic: "/perception/target_pose_camera"
     target_locked_topic: "/sim/perception/target_locked"
     candidate_visible_topic: "/sim/perception/target_candidate_visible"
     debug_topic: "/perception/target_cloud_debug"
     target_frame: "world"
     enabled: true
     publish_rate_hz: 4.0
-    detection_stale_sec: 4.0
+    detection_stale_sec: 6.5
     min_depth_m: 0.10
     max_depth_m: 2.00
     bbox_margin_px: 12
-    min_target_points: 40
+    min_target_points: 24
     depth_percentile_low: 30.0
     depth_band_m: 0.05
     voxel_size_m: 0.004
@@ -90,8 +91,13 @@ cloud_filter_node:
     open3d_outlier_nb_neighbors: 16
     open3d_outlier_std_ratio: 1.5
     visual_republish_rate_hz: 8.0
+    soft_lock_frames_required: 2
+    soft_lock_match_distance_px: 48.0
+    soft_lock_bbox_iou_threshold: 0.15
     stable_frames_required: 2
     lock_position_tol_m: 0.03
+    unlock_grace_sec: 1.2
+    unlock_miss_count_threshold: 3
     require_semantic_task_to_lock: true
     log_interval_sec: 8.0
 
@@ -101,17 +107,18 @@ grasp_backend_node:
     target_cloud_topic: "/perception/target_cloud"
     detection_result_topic: "/perception/detection_result"
     target_locked_topic: "/sim/perception/target_locked"
+    refresh_request_topic: "/grasp/refresh_request"
     depth_topic: "/camera/camera/aligned_depth_to_color/image_raw"
     camera_info_topic: "/camera/camera/aligned_depth_to_color/camera_info"
     candidate_grasp_proposal_array_topic: "/grasp/candidate_grasp_proposals"
     target_frame: "world"
-    backend: "contact_graspnet_http"
-    backend_url: "http://127.0.0.1:5001/infer"
+    backend: "ggcnn_local"
+    backend_url: ""
     request_timeout_sec: 12.0
     max_inference_rate_hz: 1.0
-    sensor_stale_sec: 4.0
+    sensor_stale_sec: 6.5
     max_points: 2048
-    min_points_required: 64
+    min_points_required: 32
     publish_empty_on_failure: false
     default_task_constraint_tag: "pick"
     contact_graspnet_segmap_id: 1
@@ -148,6 +155,7 @@ sim_search_sweep_node:
     trajectory_action_name: "/joint_trajectory_controller/follow_joint_trajectory"
     target_locked_topic: "/sim/perception/target_locked"
     pick_active_topic: "/sim/task/pick_active"
+    pick_status_topic: "/sim/task/pick_status"
     candidate_visible_topic: "/sim/perception/target_candidate_visible"
     detection_result_topic: "/perception/detection_result"
     auto_start_enabled: false
@@ -161,7 +169,7 @@ sim_search_sweep_node:
     joint1_max_deg: 180.0
     stop_after_first_lock: false
     enable_centering: true
-    vision_result_stale_sec: 3.0
+    vision_result_stale_sec: 6.0
     horizontal_center_tolerance_px: 40.0
     vertical_center_tolerance_px: 32.0
     bbox_edge_margin_px: 36.0
@@ -182,6 +190,8 @@ sim_search_sweep_node:
     target_session_match_distance_px: 120.0
     target_session_bbox_iou_threshold: 0.15
     target_session_timeout_sec: 12.0
+    hold_on_pick_error: true
+    failure_return_pose_deg: [-87.0, -72.0, 89.0, 89.0, -90.0]
 
 sim_pick_task_node:
   ros__parameters:
@@ -192,6 +202,7 @@ sim_pick_task_node:
     debug_stop_after_pregrasp: false
     debug_execute_ranked_candidates: false
     debug_ranked_candidate_limit: 12
+    return_named_target: "home"
     debug_return_named_target: "home"
     enforce_upright_orientation: true
     lock_joint_after_target_lock: false
@@ -202,6 +213,8 @@ sim_pick_task_node:
     wrist_joint_name: "arm_joint5"
     wrist_joint_max_delta_deg: 90.0
     wrist_joint_relaxed_delta_deg: 90.0
+    stage_position_only_target: true
+    pregrasp_position_only_target: true
     camera_scoring_link: "camera_depth_optical_frame"
     camera_forward_alignment_threshold: 0.60
     camera_upright_alignment_threshold: 0.0
@@ -229,7 +242,9 @@ sim_pick_task_node:
     prefer_external_grasp_candidates: true
     require_external_grasp_candidates: true
     include_target_collision_object: false
-    external_grasp_pose_timeout_sec: 3.5
+    external_grasp_pose_timeout_sec: 6.0
+    refresh_grasp_candidates_topic: "/grasp/refresh_request"
+    refresh_grasp_candidates_retry_sec: 1.5
     external_grasp_proposal_array_topic: "/grasp/candidate_grasp_proposals"
     execution_debug_markers_topic: "/grasp/execution_debug_markers"
     pick_status_topic: "/sim/task/pick_status"

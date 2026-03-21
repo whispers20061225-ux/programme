@@ -10,7 +10,7 @@ type VisionPageProps = {
   onChooseLabel: (label: string) => void;
 };
 
-const OVERLAY_CONFIDENCE_FLOOR = 0.1;
+const OVERLAY_CONFIDENCE_FLOOR = 0.07;
 
 function candidateDisplayLabel(candidate: CandidateDebug | null | undefined): string {
   if (!candidate) return "--";
@@ -30,9 +30,13 @@ export function VisionPage(props: VisionPageProps) {
     const fallback = (props.state.vision.debug as { top_candidates?: CandidateDebug[] }).top_candidates;
     return Array.isArray(fallback) ? fallback : [];
   }, [props.state.vision.debug, props.state.vision.debug_candidates]);
+  const visibleCandidates = useMemo<CandidateDebug[]>(
+    () => visionCandidates.filter((candidate) => candidate.confidence >= OVERLAY_CONFIDENCE_FLOOR),
+    [visionCandidates],
+  );
   const hoveredCandidate = useMemo(
-    () => findCandidate(visionCandidates, hoveredIndex),
-    [hoveredIndex, visionCandidates],
+    () => findCandidate(visibleCandidates, hoveredIndex),
+    [hoveredIndex, visibleCandidates],
   );
 
   const overlayBoxes = useMemo<OverlayBox[]>(() => {
@@ -43,9 +47,8 @@ export function VisionPage(props: VisionPageProps) {
       boxes.set(bbox.join("-"), { bbox, label, tone });
     };
 
-    for (const candidate of visionCandidates) {
+    for (const candidate of visibleCandidates) {
       if (!candidate.bbox_xyxy || candidate.bbox_xyxy.length !== 4) continue;
-      if (candidate.confidence < OVERLAY_CONFIDENCE_FLOOR) continue;
       addBox(
         candidate.bbox_xyxy,
         `${candidateDisplayLabel(candidate)} ${formatNumber(candidate.confidence, 2)}`,
@@ -79,7 +82,7 @@ export function VisionPage(props: VisionPageProps) {
       );
     }
     return Array.from(boxes.values());
-  }, [hoveredCandidate, props.state.vision.detection, props.state.vision.selected_candidate, visionCandidates]);
+  }, [hoveredCandidate, props.state.vision.detection, props.state.vision.selected_candidate, visibleCandidates]);
 
   const stageSrc = activeStream === "detection_overlay" ? props.streams.rgb : props.streams[activeStream];
   const stageBoxes = overlayBoxes;
@@ -88,7 +91,7 @@ export function VisionPage(props: VisionPageProps) {
     <div className="page-grid vision-grid">
       <Panel
         title="Vision Monitor"
-        subtitle="Detection overlay draws candidate boxes on top of the live RGB stream. All candidates with confidence >= 0.1 are shown, and hovering a candidate highlights its bounding box."
+        subtitle="Detection overlay draws candidate boxes on top of the live RGB stream. All candidates with confidence >= 0.07 are shown, and hovering a candidate highlights its bounding box."
         className="panel-tall"
         actions={
           <div className="toggle-row">
@@ -130,11 +133,11 @@ export function VisionPage(props: VisionPageProps) {
       </Panel>
 
       <Panel title="Top-K Candidates" subtitle="Clicking a candidate only stages a label-level override. There is no instance pinning in v1.">
-        {visionCandidates.length === 0 ? (
+        {visibleCandidates.length === 0 ? (
           <EmptyState title="No candidates yet" message="Waiting for detection_debug top-k candidates and bounding boxes." />
         ) : (
           <div className="candidate-list">
-            {visionCandidates.map((candidate) => {
+            {visibleCandidates.map((candidate) => {
               const isHovered = hoveredIndex === candidate.index;
               const isSelected = props.state.vision.selected_candidate?.index === candidate.index;
               return (

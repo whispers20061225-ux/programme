@@ -140,6 +140,7 @@ class GraspBackendNode(Node):
         self.declare_parameter("target_cloud_topic", "/perception/target_cloud")
         self.declare_parameter("detection_result_topic", "/perception/detection_result")
         self.declare_parameter("target_locked_topic", "/sim/perception/target_locked")
+        self.declare_parameter("refresh_request_topic", "/grasp/refresh_request")
         self.declare_parameter(
             "depth_topic", "/camera/camera/aligned_depth_to_color/image_raw"
         )
@@ -210,6 +211,7 @@ class GraspBackendNode(Node):
         self.target_cloud_topic = str(self.get_parameter("target_cloud_topic").value)
         self.detection_result_topic = str(self.get_parameter("detection_result_topic").value)
         self.target_locked_topic = str(self.get_parameter("target_locked_topic").value)
+        self.refresh_request_topic = str(self.get_parameter("refresh_request_topic").value)
         self.depth_topic = str(self.get_parameter("depth_topic").value)
         self.camera_info_topic = str(self.get_parameter("camera_info_topic").value)
         self.candidate_grasp_proposal_array_topic = str(
@@ -343,6 +345,7 @@ class GraspBackendNode(Node):
         self._target_locked = False
         self._pending_request = False
         self._request_in_flight = False
+        self._force_request_once = False
         self._last_dispatched_target_signature = ""
         self._last_log_ts = 0.0
         self._last_terminal_summary = ""
@@ -390,6 +393,7 @@ class GraspBackendNode(Node):
             DetectionResult, self.detection_result_topic, self._on_detection_result, qos_reliable
         )
         self.create_subscription(Bool, self.target_locked_topic, self._on_target_locked, qos_reliable)
+        self.create_subscription(Bool, self.refresh_request_topic, self._on_refresh_request, qos_reliable)
         self.create_subscription(Image, self.depth_topic, self._on_depth_image, qos_sensor)
         self.create_subscription(
             CameraInfo, self.camera_info_topic, self._on_camera_info, qos_sensor
@@ -462,8 +466,20 @@ class GraspBackendNode(Node):
             self._pending_request = True
 
     def _on_target_locked(self, msg: Bool) -> None:
+        was_locked = self._target_locked
         self._target_locked = bool(msg.data)
+        if self._target_locked and not was_locked:
+            self._last_dispatched_target_signature = ""
         self._pending_request = self._target_locked
+
+    def _on_refresh_request(self, msg: Bool) -> None:
+        if not bool(msg.data):
+            return
+        self._force_request_once = True
+        self._last_dispatched_target_signature = ""
+        self._pending_request = True
+        self._log_precheck_state(f"{self.backend} refresh requested")
+        self._maybe_run_inference()
 
     def _maybe_run_inference(self) -> None:
         if not self._pending_request:
@@ -496,7 +512,7 @@ class GraspBackendNode(Node):
             except Exception as exc:  # noqa: BLE001
                 self._log_precheck_state(f"{self.backend} precheck failed: {str(exc).strip()}")
                 return
-            if signature == self._last_dispatched_target_signature:
+            if not self._force_request_once and signature == self._last_dispatched_target_signature:
                 self._pending_request = False
                 return
 
@@ -507,6 +523,7 @@ class GraspBackendNode(Node):
             self._pending_request = False
             if self.backend in ("contact_graspnet_http", "ggcnn_local"):
                 self._last_dispatched_target_signature = signature
+                self._force_request_once = False
 
         worker = threading.Thread(target=self._run_backend, daemon=True)
         worker.start()

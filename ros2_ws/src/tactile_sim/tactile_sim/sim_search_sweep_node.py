@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import math
 from typing import List, Optional
 
@@ -8,7 +9,7 @@ from control_msgs.action import FollowJointTrajectory
 from rclpy.action import ActionClient
 from rclpy.node import Node
 from sensor_msgs.msg import JointState
-from std_msgs.msg import Bool
+from std_msgs.msg import Bool, String
 from std_srvs.srv import Trigger
 from tactile_interfaces.msg import DetectionResult
 from trajectory_msgs.msg import JointTrajectoryPoint
@@ -37,6 +38,7 @@ class SimSearchSweepNode(Node):
             "/sim/perception/target_locked",
         )
         self.declare_parameter("pick_active_topic", "")
+        self.declare_parameter("pick_status_topic", "")
         self.declare_parameter("candidate_visible_topic", "")
         self.declare_parameter("detection_result_topic", "")
         self.declare_parameter("vision_result_topic", "/qwen/vision_result")
@@ -79,10 +81,13 @@ class SimSearchSweepNode(Node):
         self.declare_parameter("target_session_match_distance_px", 120.0)
         self.declare_parameter("target_session_bbox_iou_threshold", 0.15)
         self.declare_parameter("target_session_timeout_sec", 4.0)
+        self.declare_parameter("hold_on_pick_error", True)
+        self.declare_parameter("failure_return_pose_deg", [0.0, 0.0, 0.0, 0.0, 0.0])
 
         self.trajectory_action_name = str(self.get_parameter("trajectory_action_name").value)
         target_locked_topic = str(self.get_parameter("target_locked_topic").value)
         self.pick_active_topic = str(self.get_parameter("pick_active_topic").value).strip()
+        self.pick_status_topic = str(self.get_parameter("pick_status_topic").value).strip()
         self.candidate_visible_topic = str(
             self.get_parameter("candidate_visible_topic").value
         ).strip()
@@ -180,6 +185,13 @@ class SimSearchSweepNode(Node):
         self.target_session_timeout_sec = max(
             0.2, float(self.get_parameter("target_session_timeout_sec").value)
         )
+        self.hold_on_pick_error = bool(self.get_parameter("hold_on_pick_error").value)
+        failure_return_pose_deg = [
+            float(v) for v in list(self.get_parameter("failure_return_pose_deg").value)
+        ]
+        if len(failure_return_pose_deg) != len(self.JOINT_NAMES):
+            failure_return_pose_deg = [0.0] * len(self.JOINT_NAMES)
+        self.failure_return_pose_deg = failure_return_pose_deg
 
         self._locked = False
         self._locked_once = False
@@ -210,6 +222,10 @@ class SimSearchSweepNode(Node):
         self._session_bbox_xyxy: Optional[List[float]] = None
         self._session_last_seen_ts = 0.0
         self._last_centering_log_ts = 0.0
+        self._failure_hold = False
+        self._failure_return_pending = False
+        self._pick_status_phase = ""
+        self._pick_status_message = ""
 
         self._trajectory_client = ActionClient(
             self,
@@ -223,6 +239,13 @@ class SimSearchSweepNode(Node):
             self.create_service(Trigger, self.enable_service, self._on_enable_search_sweep)
         if self.pick_active_topic:
             self.create_subscription(Bool, self.pick_active_topic, self._on_pick_active, 10)
+        if self.pick_status_topic:
+            self.create_subscription(
+                String,
+                self.pick_status_topic,
+                self._on_pick_status,
+                10,
+            )
         if self.candidate_visible_topic:
             self.create_subscription(
                 Bool, self.candidate_visible_topic, self._on_candidate_visible, 10
@@ -240,13 +263,14 @@ class SimSearchSweepNode(Node):
             f"vertical_joint={self.JOINT_NAMES[self.vertical_joint_index]}, "
             f"auto_start_enabled={self.auto_start_enabled}, "
             f"pick_active_topic={self.pick_active_topic or '<disabled>'}, "
+            f"pick_status_topic={self.pick_status_topic or '<disabled>'}, "
             f"candidate_visible_topic={self.candidate_visible_topic or '<disabled>'}"
         )
 
     def _on_enable_search_sweep(
         self, _: Trigger.Request, response: Trigger.Response
     ) -> Trigger.Response:
-        if self._enabled:
+        if self._enabled and not self._failure_hold:
             response.success = True
             response.message = "search sweep already enabled"
             return response
@@ -254,7 +278,10 @@ class SimSearchSweepNode(Node):
         self._locked = False
         self._locked_once = False
         self._goal_inflight = False
+        self._failure_hold = False
+        self._failure_return_pending = False
         self._scan_index = 0
+        self._clear_runtime_tracking(clear_session=True)
         self._next_motion_time = self.get_clock().now().nanoseconds / 1e9 + self.startup_delay_sec
         self.get_logger().info("search sweep enabled by external request")
         response.success = True
@@ -262,6 +289,8 @@ class SimSearchSweepNode(Node):
         return response
 
     def _on_target_locked(self, msg: Bool) -> None:
+        if self._failure_hold:
+            return
         was_locked = self._locked
         self._locked = bool(msg.data)
         if self._locked and not was_locked:
@@ -275,6 +304,8 @@ class SimSearchSweepNode(Node):
             self.get_logger().info("search sweep lost target lock; resuming scan")
 
     def _on_pick_active(self, msg: Bool) -> None:
+        if self._failure_hold:
+            return
         was_pick_active = self._pick_active
         self._pick_active = bool(msg.data)
         if self._pick_active and not was_pick_active:
@@ -285,7 +316,21 @@ class SimSearchSweepNode(Node):
             )
             self.get_logger().info("search sweep resumed: pick sequence inactive")
 
+    def _on_pick_status(self, msg: String) -> None:
+        try:
+            payload = json.loads(str(msg.data or "").strip())
+        except json.JSONDecodeError:
+            payload = {}
+        phase = str(payload.get("phase", "")).strip().lower()
+        message = str(payload.get("message", "")).strip()
+        self._pick_status_phase = phase
+        self._pick_status_message = message
+        if self.hold_on_pick_error and phase == "error":
+            self._enter_failure_hold(message or "pick sequence failed")
+
     def _on_candidate_visible(self, msg: Bool) -> None:
+        if self._failure_hold:
+            return
         was_candidate_visible = self._candidate_visible
         self._candidate_visible = bool(msg.data)
         if self._candidate_visible and not was_candidate_visible:
@@ -315,6 +360,8 @@ class SimSearchSweepNode(Node):
         self._current_pose_deg = pose_deg
 
     def _on_vision_result(self, msg: DetectionResult) -> None:
+        if self._failure_hold:
+            return
         now_sec = self.get_clock().now().nanoseconds / 1e9
         point_px_value = (
             [float(msg.point_px[0]), float(msg.point_px[1])]
@@ -472,9 +519,55 @@ class SimSearchSweepNode(Node):
         self._session_last_seen_ts = 0.0
         self.get_logger().info(reason)
 
+    def _clear_runtime_tracking(self, *, clear_session: bool) -> None:
+        self._locked = False
+        self._pick_active = False
+        self._candidate_visible = False
+        self._last_vision_result_ts = 0.0
+        self._vision_point_px = None
+        self._vision_bbox_xyxy = None
+        self._vision_image_size = None
+        self._vision_label = ""
+        self._vision_pose_valid = False
+        self._vision_pose_stable = False
+        self._vision_candidate_complete = False
+        self._vision_target_locked = False
+        self._pending_center_feedback = None
+        self._holding_for_pose_lock = False
+        if clear_session and self._session_active:
+            self._clear_target_session("search sweep cleared target session")
+        elif clear_session:
+            self._session_active = False
+            self._session_label = ""
+            self._session_point_px = None
+            self._session_bbox_xyxy = None
+            self._session_last_seen_ts = 0.0
+
+    def _enter_failure_hold(self, reason: str) -> None:
+        if self._failure_hold:
+            return
+        self._failure_hold = True
+        self._failure_return_pending = True
+        self._locked_once = False
+        self._goal_inflight = False
+        self._clear_runtime_tracking(clear_session=True)
+        self._next_motion_time = self.get_clock().now().nanoseconds / 1e9
+        self.get_logger().warn(
+            "search sweep entering failure hold: "
+            f"{reason or 'pick sequence error'}; returning arm to configured home pose"
+        )
+
     def _on_timer(self) -> None:
         now_sec = self.get_clock().now().nanoseconds / 1e9
         if not self._enabled:
+            return
+        if self._failure_hold:
+            if self._failure_return_pending and not self._goal_inflight:
+                self._failure_return_pending = False
+                self._send_goal(
+                    list(self.failure_return_pose_deg),
+                    "return to configured home pose after pick failure",
+                )
             return
         if (
             self._locked

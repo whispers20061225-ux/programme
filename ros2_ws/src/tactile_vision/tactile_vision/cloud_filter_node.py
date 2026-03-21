@@ -43,6 +43,7 @@ class CloudFilterNode(Node):
         self.declare_parameter("target_cloud_topic", "/perception/target_cloud")
         self.declare_parameter("target_cloud_markers_topic", "/perception/target_cloud_markers")
         self.declare_parameter("target_pose_topic", "/sim/perception/target_pose")
+        self.declare_parameter("target_pose_camera_topic", "/perception/target_pose_camera")
         self.declare_parameter("target_locked_topic", "/sim/perception/target_locked")
         self.declare_parameter("semantic_task_topic", "/qwen/semantic_task")
         self.declare_parameter(
@@ -64,8 +65,13 @@ class CloudFilterNode(Node):
         self.declare_parameter("open3d_outlier_nb_neighbors", 16)
         self.declare_parameter("open3d_outlier_std_ratio", 1.5)
         self.declare_parameter("visual_republish_rate_hz", 8.0)
+        self.declare_parameter("soft_lock_frames_required", 2)
+        self.declare_parameter("soft_lock_match_distance_px", 48.0)
+        self.declare_parameter("soft_lock_bbox_iou_threshold", 0.15)
         self.declare_parameter("stable_frames_required", 2)
         self.declare_parameter("lock_position_tol_m", 0.03)
+        self.declare_parameter("unlock_grace_sec", 1.2)
+        self.declare_parameter("unlock_miss_count_threshold", 3)
         self.declare_parameter("require_semantic_task_to_lock", False)
         self.declare_parameter("log_interval_sec", 8.0)
 
@@ -77,6 +83,9 @@ class CloudFilterNode(Node):
             self.get_parameter("target_cloud_markers_topic").value
         )
         self.target_pose_topic = str(self.get_parameter("target_pose_topic").value)
+        self.target_pose_camera_topic = str(
+            self.get_parameter("target_pose_camera_topic").value
+        )
         self.target_locked_topic = str(self.get_parameter("target_locked_topic").value)
         self.semantic_task_topic = str(self.get_parameter("semantic_task_topic").value)
         self.candidate_visible_topic = str(self.get_parameter("candidate_visible_topic").value)
@@ -108,11 +117,24 @@ class CloudFilterNode(Node):
         self.visual_republish_rate_hz = max(
             0.2, float(self.get_parameter("visual_republish_rate_hz").value)
         )
+        self.soft_lock_frames_required = max(
+            1, int(self.get_parameter("soft_lock_frames_required").value)
+        )
+        self.soft_lock_match_distance_px = max(
+            1.0, float(self.get_parameter("soft_lock_match_distance_px").value)
+        )
+        self.soft_lock_bbox_iou_threshold = max(
+            0.0, min(1.0, float(self.get_parameter("soft_lock_bbox_iou_threshold").value))
+        )
         self.stable_frames_required = max(
             1, int(self.get_parameter("stable_frames_required").value)
         )
         self.lock_position_tol_m = max(
             0.001, float(self.get_parameter("lock_position_tol_m").value)
+        )
+        self.unlock_grace_sec = max(0.0, float(self.get_parameter("unlock_grace_sec").value))
+        self.unlock_miss_count_threshold = max(
+            1, int(self.get_parameter("unlock_miss_count_threshold").value)
         )
         self.require_semantic_task_to_lock = bool(
             self.get_parameter("require_semantic_task_to_lock").value
@@ -125,13 +147,22 @@ class CloudFilterNode(Node):
         self._latest_detection_ts = 0.0
         self._latest_depth_msg: Optional[Image] = None
         self._latest_camera_info: Optional[CameraInfo] = None
+        self._soft_last_point_px: Optional[np.ndarray] = None
+        self._soft_last_bbox_xyxy: Optional[np.ndarray] = None
+        self._soft_last_label = ""
+        self._soft_stable_count = 0
+        self._soft_locked = False
         self._last_world_position: Optional[np.ndarray] = None
         self._stable_count = 0
         self._last_lock_state = False
         self._last_reset_reason = ""
         self._last_summary = ""
+        self._unlock_pending_since = 0.0
+        self._unlock_miss_count = 0
         self._last_target_cloud_points: Optional[np.ndarray] = None
         self._last_target_pose_position: Optional[np.ndarray] = None
+        self._last_target_pose_camera_position: Optional[np.ndarray] = None
+        self._last_target_pose_camera_frame = ""
         self._semantic_task_active = not self.require_semantic_task_to_lock
         self._tf_buffer = Buffer()
         self._tf_listener = TransformListener(self._tf_buffer, self, spin_thread=False)
@@ -173,6 +204,9 @@ class CloudFilterNode(Node):
         self.target_pose_pub = self.create_publisher(
             PoseStamped, self.target_pose_topic, qos_latched
         )
+        self.target_pose_camera_pub = self.create_publisher(
+            PoseStamped, self.target_pose_camera_topic, qos_latched
+        )
         self.target_locked_pub = self.create_publisher(
             Bool, self.target_locked_topic, qos_reliable
         )
@@ -186,7 +220,8 @@ class CloudFilterNode(Node):
         self.get_logger().info(
             "cloud_filter_node started: "
             f"detection={self.detection_result_topic}, target_cloud={self.target_cloud_topic}, "
-            f"target_pose={self.target_pose_topic}, target_frame={self.target_frame}, "
+            f"target_pose={self.target_pose_topic}, target_pose_camera={self.target_pose_camera_topic}, "
+            f"target_frame={self.target_frame}, "
             f"open3d_available={open3d_available()}"
         )
 
@@ -215,6 +250,7 @@ class CloudFilterNode(Node):
         if not self.enabled:
             return
 
+        now_sec = time.time()
         with self._detection_lock:
             detection = self._latest_detection
             detection_ts = self._latest_detection_ts
@@ -224,21 +260,57 @@ class CloudFilterNode(Node):
 
         if detection is None or depth_msg is None or camera_info is None:
             return
-        if time.time() - detection_ts > self.detection_stale_sec:
+        if now_sec - detection_ts > self.detection_stale_sec:
+            if self._hold_hard_lock_grace(
+                "stale_detection",
+                now_sec,
+                candidate_visible=bool(self._soft_locked or self._last_lock_state),
+            ):
+                return
             self._reset_state("stale_detection")
             return
-        if not bool(detection.accepted):
-            self._reset_state(str(detection.reason or "detection_not_accepted"))
+
+        soft_visible = self._update_soft_lock_from_detection(detection)
+        if not soft_visible:
+            if self._hold_hard_lock_grace("soft_lock_lost", now_sec, candidate_visible=False):
+                return
+            self._reset_state(str(detection.reason or "soft_lock_lost"))
             return
 
         depth_image = decode_depth_image(depth_msg)
         if depth_image is None:
-            self._reset_state("invalid_depth_image")
+            if self._hold_hard_lock_grace("invalid_depth_image", now_sec, candidate_visible=True):
+                return
+            self._clear_hard_state()
+            self._publish_soft_state("invalid_depth_image", str(detection.target_label or ""))
             return
 
-        points_world = self._extract_target_cloud(depth_image, camera_info, depth_msg, detection)
-        if points_world is None or points_world.shape[0] < self.min_target_points:
-            self._reset_state("insufficient_target_points")
+        extraction = self._extract_target_cloud(depth_image, camera_info, depth_msg, detection)
+        if extraction is None:
+            if self._hold_hard_lock_grace(
+                "insufficient_target_points", now_sec, candidate_visible=True
+            ):
+                return
+            self._clear_hard_state()
+            self._publish_soft_state("insufficient_target_points", str(detection.target_label or ""))
+            return
+
+        (
+            points_world,
+            source_frame,
+            anchor_depth,
+            candidate_mask_pixels,
+            target_mask_pixels,
+            rotation,
+            translation,
+        ) = extraction
+        if points_world.shape[0] < self.min_target_points:
+            if self._hold_hard_lock_grace(
+                "insufficient_target_points", now_sec, candidate_visible=True
+            ):
+                return
+            self._clear_hard_state()
+            self._publish_soft_state("insufficient_target_points", str(detection.target_label or ""))
             return
 
         points_world = voxel_downsample(points_world, self.voxel_size_m)
@@ -249,7 +321,15 @@ class CloudFilterNode(Node):
                 self.open3d_outlier_std_ratio,
             )
         if points_world.shape[0] < self.min_target_points:
-            self._reset_state("insufficient_target_points_after_filter")
+            if self._hold_hard_lock_grace(
+                "insufficient_target_points_after_filter", now_sec, candidate_visible=True
+            ):
+                return
+            self._clear_hard_state()
+            self._publish_soft_state(
+                "insufficient_target_points_after_filter",
+                str(detection.target_label or ""),
+            )
             return
         centroid = np.mean(points_world, axis=0)
         if self._last_world_position is None:
@@ -259,9 +339,13 @@ class CloudFilterNode(Node):
         else:
             self._stable_count = 1
         self._last_world_position = centroid
-        locked = bool(self._stable_count >= self.stable_frames_required)
+        locked = bool(
+            self._soft_locked and self._stable_count >= self.stable_frames_required
+        )
         if self.require_semantic_task_to_lock and not self._semantic_task_active:
             locked = False
+        self._unlock_pending_since = 0.0
+        self._unlock_miss_count = 0
 
         cloud_msg = make_xyz_cloud(points_world, self.target_frame, depth_msg.header.stamp)
         self.target_cloud_pub.publish(cloud_msg)
@@ -276,10 +360,35 @@ class CloudFilterNode(Node):
         pose_msg.pose.position.z = float(centroid[2])
         pose_msg.pose.orientation.w = 1.0
         self.target_pose_pub.publish(pose_msg)
+        centroid_camera = (centroid.astype(np.float64) - translation) @ rotation
+        pose_camera_msg = PoseStamped()
+        pose_camera_msg.header.stamp = depth_msg.header.stamp
+        pose_camera_msg.header.frame_id = source_frame
+        pose_camera_msg.pose.position.x = float(centroid_camera[0])
+        pose_camera_msg.pose.position.y = float(centroid_camera[1])
+        pose_camera_msg.pose.position.z = float(centroid_camera[2])
+        pose_camera_msg.pose.orientation.w = 1.0
+        self.target_pose_camera_pub.publish(pose_camera_msg)
         self._last_target_cloud_points = points_world.astype(np.float32, copy=True)
         self._last_target_pose_position = centroid.astype(np.float32, copy=True)
+        self._last_target_pose_camera_position = np.asarray(
+            centroid_camera, dtype=np.float32
+        ).copy()
+        self._last_target_pose_camera_frame = str(source_frame)
         self.target_locked_pub.publish(Bool(data=locked))
         self.candidate_visible_pub.publish(Bool(data=True))
+
+        point_px = None
+        if bool(detection.has_point) and len(detection.point_px) >= 2:
+            point_px = [int(detection.point_px[0]), int(detection.point_px[1])]
+        bbox_xyxy = None
+        if bool(detection.has_bbox):
+            bbox_xyxy = [
+                int(detection.bbox.x_offset),
+                int(detection.bbox.y_offset),
+                int(detection.bbox.x_offset + detection.bbox.width),
+                int(detection.bbox.y_offset + detection.bbox.height),
+            ]
 
         debug_msg = String()
         debug_msg.data = compact_json(
@@ -287,11 +396,24 @@ class CloudFilterNode(Node):
                 "status": "ok",
                 "target_label": str(detection.target_label or ""),
                 "target_points": int(points_world.shape[0]),
+                "point_px": point_px,
+                "bbox_xyxy": bbox_xyxy,
+                "source_frame": str(source_frame),
+                "anchor_depth_m": round(float(anchor_depth), 4),
+                "candidate_mask_pixels": int(candidate_mask_pixels),
+                "target_mask_pixels": int(target_mask_pixels),
+                "centroid_xyz_camera": [
+                    round(float(centroid_camera[0]), 4),
+                    round(float(centroid_camera[1]), 4),
+                    round(float(centroid_camera[2]), 4),
+                ],
                 "centroid_xyz": [
                     round(float(centroid[0]), 4),
                     round(float(centroid[1]), 4),
                     round(float(centroid[2]), 4),
                 ],
+                "soft_locked": bool(self._soft_locked),
+                "soft_stable_count": int(self._soft_stable_count),
                 "locked": locked,
                 "stable_count": int(self._stable_count),
                 "mask_used": bool(detection.has_mask),
@@ -301,6 +423,7 @@ class CloudFilterNode(Node):
         self.debug_pub.publish(debug_msg)
         summary_key = (
             str(detection.target_label or "<none>"),
+            bool(self._soft_locked),
             bool(locked),
         )
         if locked != self._last_lock_state or str(summary_key) != self._last_summary:
@@ -310,10 +433,169 @@ class CloudFilterNode(Node):
             self.get_logger().info(
                 "target tracking decision: "
                 f"label={str(detection.target_label or '<none>')} "
+                f"soft_locked={self._soft_locked} "
                 f"locked={locked} "
                 f"points={points_world.shape[0]} "
+                f"soft_frames={self._soft_stable_count} "
                 f"stable_frames={self._stable_count}"
             )
+
+    def _update_soft_lock_from_detection(self, detection: DetectionResult) -> bool:
+        if not bool(detection.accepted) or not bool(detection.candidate_visible):
+            self._clear_soft_state()
+            return False
+
+        point_px: Optional[np.ndarray] = None
+        if bool(detection.has_point):
+            point_px = np.asarray(
+                [float(detection.point_px[0]), float(detection.point_px[1])],
+                dtype=np.float32,
+            )
+
+        bbox_xyxy: Optional[np.ndarray] = None
+        if bool(detection.has_bbox):
+            bbox_xyxy = np.asarray(
+                [
+                    float(detection.bbox.x_offset),
+                    float(detection.bbox.y_offset),
+                    float(detection.bbox.x_offset + detection.bbox.width),
+                    float(detection.bbox.y_offset + detection.bbox.height),
+                ],
+                dtype=np.float32,
+            )
+            if point_px is None:
+                point_px = np.asarray(
+                    [
+                        float(bbox_xyxy[0] + bbox_xyxy[2]) * 0.5,
+                        float(bbox_xyxy[1] + bbox_xyxy[3]) * 0.5,
+                    ],
+                    dtype=np.float32,
+                )
+
+        if point_px is None:
+            self._clear_soft_state()
+            return False
+
+        label = str(detection.target_label or "").strip()
+        matched = False
+        if self._soft_last_point_px is not None:
+            if self._soft_last_label and label and self._soft_last_label != label:
+                matched = False
+            else:
+                distance_px = float(np.linalg.norm(point_px - self._soft_last_point_px))
+                matched = distance_px <= self.soft_lock_match_distance_px
+                if (
+                    not matched
+                    and self._soft_last_bbox_xyxy is not None
+                    and bbox_xyxy is not None
+                    and self._bbox_iou(self._soft_last_bbox_xyxy, bbox_xyxy)
+                    >= self.soft_lock_bbox_iou_threshold
+                ):
+                    matched = True
+
+        if matched:
+            self._soft_stable_count += 1
+        else:
+            self._soft_stable_count = 1
+        self._soft_last_point_px = point_px.astype(np.float32, copy=True)
+        self._soft_last_bbox_xyxy = (
+            bbox_xyxy.astype(np.float32, copy=True) if bbox_xyxy is not None else None
+        )
+        self._soft_last_label = label
+        self._soft_locked = bool(self._soft_stable_count >= self.soft_lock_frames_required)
+        if self.require_semantic_task_to_lock and not self._semantic_task_active:
+            self._soft_locked = False
+        return True
+
+    def _bbox_iou(self, bbox_a: np.ndarray, bbox_b: np.ndarray) -> float:
+        ax1, ay1, ax2, ay2 = [float(v) for v in bbox_a]
+        bx1, by1, bx2, by2 = [float(v) for v in bbox_b]
+        inter_x1 = max(ax1, bx1)
+        inter_y1 = max(ay1, by1)
+        inter_x2 = min(ax2, bx2)
+        inter_y2 = min(ay2, by2)
+        inter_w = max(0.0, inter_x2 - inter_x1)
+        inter_h = max(0.0, inter_y2 - inter_y1)
+        inter_area = inter_w * inter_h
+        if inter_area <= 0.0:
+            return 0.0
+        area_a = max(0.0, ax2 - ax1) * max(0.0, ay2 - ay1)
+        area_b = max(0.0, bx2 - bx1) * max(0.0, by2 - by1)
+        denom = area_a + area_b - inter_area
+        if denom <= 1e-6:
+            return 0.0
+        return inter_area / denom
+
+    def _clear_soft_state(self) -> None:
+        self._soft_last_point_px = None
+        self._soft_last_bbox_xyxy = None
+        self._soft_last_label = ""
+        self._soft_stable_count = 0
+        self._soft_locked = False
+
+    def _clear_hard_state(self) -> None:
+        self._stable_count = 0
+        self._last_world_position = None
+
+    def _hold_hard_lock_grace(self, reason: str, now_sec: float, candidate_visible: bool) -> bool:
+        if not self._last_lock_state or self.unlock_grace_sec <= 0.0:
+            return False
+
+        if self._unlock_pending_since <= 0.0:
+            self._unlock_pending_since = now_sec
+        self._unlock_miss_count += 1
+        within_time = (now_sec - self._unlock_pending_since) <= self.unlock_grace_sec
+        within_count = self._unlock_miss_count < self.unlock_miss_count_threshold
+        if not (within_time and within_count):
+            return False
+
+        self.target_locked_pub.publish(Bool(data=True))
+        self.candidate_visible_pub.publish(Bool(data=bool(candidate_visible)))
+        msg = String()
+        msg.data = compact_json(
+            {
+                "status": "grace",
+                "reason": reason,
+                "soft_locked": bool(self._soft_locked),
+                "soft_stable_count": int(self._soft_stable_count),
+                "locked": True,
+                "stable_count": int(self._stable_count),
+                "miss_count": int(self._unlock_miss_count),
+                "grace_sec": float(self.unlock_grace_sec),
+            }
+        )
+        self.debug_pub.publish(msg)
+        self._last_reset_reason = reason
+        return True
+
+    def _publish_soft_state(self, reason: str, target_label: str) -> None:
+        self.target_locked_pub.publish(Bool(data=False))
+        self.candidate_visible_pub.publish(Bool(data=True))
+        msg = String()
+        msg.data = compact_json(
+            {
+                "status": "soft_lock",
+                "reason": reason,
+                "target_label": target_label,
+                "soft_locked": bool(self._soft_locked),
+                "soft_stable_count": int(self._soft_stable_count),
+                "locked": False,
+                "stable_count": int(self._stable_count),
+            }
+        )
+        self.debug_pub.publish(msg)
+        summary_key = (target_label or "<none>", bool(self._soft_locked), False)
+        if self._last_lock_state or str(summary_key) != self._last_summary:
+            self.get_logger().info(
+                "target tracking decision: "
+                f"label={target_label or '<none>'} "
+                f"soft_locked={self._soft_locked} "
+                f"locked=False "
+                f"reason={reason}"
+            )
+        self._last_summary = str(summary_key)
+        self._last_lock_state = False
+        self._last_reset_reason = reason
 
     def _extract_target_cloud(
         self,
@@ -321,7 +603,7 @@ class CloudFilterNode(Node):
         camera_info: CameraInfo,
         depth_msg: Image,
         detection: DetectionResult,
-    ) -> Optional[np.ndarray]:
+    ) -> Optional[tuple[np.ndarray, str, float, int, int, np.ndarray, np.ndarray]]:
         image_h, image_w = depth_image.shape[:2]
         x1 = 0
         y1 = 0
@@ -418,11 +700,21 @@ class CloudFilterNode(Node):
             ],
             dtype=np.float64,
         )
-        return (points_camera @ rotation.T + translation).astype(np.float32)
+        return (
+            (points_camera @ rotation.T + translation).astype(np.float32),
+            str(source_frame),
+            float(anchor_depth),
+            int(np.count_nonzero(candidate_mask)),
+            int(np.count_nonzero(target_mask)),
+            rotation.astype(np.float64, copy=True),
+            translation.astype(np.float64, copy=True),
+        )
 
     def _reset_state(self, reason: str) -> None:
-        self._stable_count = 0
-        self._last_world_position = None
+        self._clear_soft_state()
+        self._clear_hard_state()
+        self._unlock_pending_since = 0.0
+        self._unlock_miss_count = 0
         self.target_locked_pub.publish(Bool(data=False))
         self.candidate_visible_pub.publish(Bool(data=False))
         msg = String()
@@ -451,6 +743,18 @@ class CloudFilterNode(Node):
             pose_msg.pose.position.z = float(self._last_target_pose_position[2])
             pose_msg.pose.orientation.w = 1.0
             self.target_pose_pub.publish(pose_msg)
+        if (
+            self._last_target_pose_camera_position is not None
+            and self._last_target_pose_camera_frame
+        ):
+            pose_msg = PoseStamped()
+            pose_msg.header.stamp = stamp
+            pose_msg.header.frame_id = self._last_target_pose_camera_frame
+            pose_msg.pose.position.x = float(self._last_target_pose_camera_position[0])
+            pose_msg.pose.position.y = float(self._last_target_pose_camera_position[1])
+            pose_msg.pose.position.z = float(self._last_target_pose_camera_position[2])
+            pose_msg.pose.orientation.w = 1.0
+            self.target_pose_camera_pub.publish(pose_msg)
 
     def _make_target_cloud_marker(self, points_world: np.ndarray, stamp) -> Marker:
         marker = Marker()

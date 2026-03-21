@@ -1062,6 +1062,7 @@ class TactileWebGateway(Node):
         self.declare_parameter("arm_state_topic", "/arm/state")
         self.declare_parameter("execute_pick_service", "/task/execute_pick")
         self.declare_parameter("reset_pick_session_service", "/task/reset_pick_session")
+        self.declare_parameter("return_home_service", "/task/return_home")
         self.declare_parameter("start_search_sweep_service", "/task/start_search_sweep")
         self.declare_parameter("event_log_capacity", 240)
         self.declare_parameter("feedback_event_capacity", 48)
@@ -1113,6 +1114,7 @@ class TactileWebGateway(Node):
         self.reset_pick_session_service = str(
             self.get_parameter("reset_pick_session_service").value
         )
+        self.return_home_service = str(self.get_parameter("return_home_service").value)
         self.start_search_sweep_service = str(
             self.get_parameter("start_search_sweep_service").value
         )
@@ -1191,6 +1193,7 @@ class TactileWebGateway(Node):
         )
         self.execute_pick_client = self.create_client(Trigger, self.execute_pick_service)
         self.reset_pick_client = self.create_client(Trigger, self.reset_pick_session_service)
+        self.return_home_client = self.create_client(Trigger, self.return_home_service)
         self.start_search_sweep_client = self.create_client(
             Trigger, self.start_search_sweep_service
         )
@@ -1281,6 +1284,7 @@ class TactileWebGateway(Node):
         )
 
         self._last_pick_status_phase = "idle"
+        self._last_pick_progress_key = ""
         self._last_pick_active = False
         self._last_target_locked = False
 
@@ -1407,6 +1411,15 @@ class TactileWebGateway(Node):
         parsed["updated_at"] = _now_sec()
         phase = str(parsed.get("phase", "idle") or "idle")
         phase_changed = phase != self._last_pick_status_phase
+        progress_total = int(parsed.get("progress_total", 0) or 0)
+        progress_current = int(parsed.get("progress_current", 0) or 0)
+        progress_percent = int(parsed.get("progress_percent", 0) or 0)
+        progress_stage = str(parsed.get("progress_stage", "") or "").strip()
+        progress_key = (
+            f"{phase}|{progress_stage}|{progress_current}|{progress_total}|{progress_percent}"
+            if phase == "planning" and progress_total > 0
+            else ""
+        )
         if phase_changed:
             self._last_pick_status_phase = phase
             self._record_event(
@@ -1416,6 +1429,23 @@ class TactileWebGateway(Node):
                 data={"phase": phase},
                 feedback=phase in {"completed", "error"},
             )
+            self._last_pick_progress_key = ""
+        elif progress_key and progress_key != self._last_pick_progress_key:
+            self._record_event(
+                "planning",
+                "info",
+                str(parsed.get("message") or "planning progress"),
+                data={
+                    "phase": phase,
+                    "progress_stage": progress_stage,
+                    "progress_current": progress_current,
+                    "progress_total": progress_total,
+                    "progress_percent": progress_percent,
+                },
+                feedback=False,
+            )
+        if progress_key:
+            self._last_pick_progress_key = progress_key
         with self._lock:
             self._pick_status = parsed
             self._state_version += 1
@@ -2946,6 +2976,16 @@ class TactileWebGateway(Node):
         )
         return ok, message, self.build_state()
 
+    def return_home(self) -> tuple[bool, str, dict[str, Any]]:
+        ok, message = self._call_trigger(self.return_home_client)
+        self._record_event(
+            "execution",
+            "info" if ok else "error",
+            "return home requested" if ok else f"return home failed: {message}",
+            feedback=True,
+        )
+        return ok, message, self.build_state()
+
     def build_state(self) -> dict[str, Any]:
         with self._lock:
             semantic = copy.deepcopy(self._semantic_task)
@@ -3233,6 +3273,15 @@ def create_app(bridge: TactileWebGateway) -> Any:
     @app.post("/api/execution/execute")
     async def post_execute() -> JSONResponse:
         ok, message, state = bridge.execute_pick()
+        status_code = 200 if ok else 409
+        return JSONResponse(
+            {"ok": ok, "message": message, "state": state},
+            status_code=status_code,
+        )
+
+    @app.post("/api/execution/return-home")
+    async def post_return_home() -> JSONResponse:
+        ok, message, state = bridge.return_home()
         status_code = 200 if ok else 409
         return JSONResponse(
             {"ok": ok, "message": message, "state": state},

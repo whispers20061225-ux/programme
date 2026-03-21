@@ -354,7 +354,22 @@ def generate_launch_description() -> LaunchDescription:
         condition=IfCondition(start_gui),
     )
 
-    robot_description = Command([FindExecutable(name="xacro"), " ", xacro_file])
+    robot_description = Command(
+        [
+            FindExecutable(name="xacro"),
+            " ",
+            xacro_file,
+            " ",
+            "base_world_x:=",
+            spawn_x,
+            " ",
+            "base_world_y:=",
+            spawn_y,
+            " ",
+            "base_world_z:=",
+            spawn_z,
+        ]
+    )
 
     robot_state_publisher = Node(
         package="robot_state_publisher",
@@ -382,11 +397,11 @@ def generate_launch_description() -> LaunchDescription:
             "-topic",
             "robot_description",
             "-x",
-            spawn_x,
+            "0.0",
             "-y",
-            spawn_y,
+            "0.0",
             "-z",
-            spawn_z,
+            "0.0",
         ] + quiet_node_args,
     )
 

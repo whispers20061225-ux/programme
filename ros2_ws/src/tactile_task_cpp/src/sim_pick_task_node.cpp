@@ -110,6 +110,7 @@ private:
     double external_confidence_score{0.0};
     double external_proposal_bonus{0.0};
     std::optional<ExternalProposalMetadata> external_metadata;
+    bool skip_stage{false};
   };
 
   struct PlannedApproachEvaluation
@@ -145,10 +146,13 @@ private:
   {
     this->declare_parameter<std::string>("target_pose_topic", "/sim/perception/target_pose");
     this->declare_parameter<std::string>("target_locked_topic", "/sim/perception/target_locked");
+    this->declare_parameter<std::string>("refresh_grasp_candidates_topic", "/grasp/refresh_request");
     this->declare_parameter<std::string>("pick_active_topic", "/sim/task/pick_active");
     this->declare_parameter<std::string>("pick_status_topic", "/sim/task/pick_status");
     this->declare_parameter<std::string>("execute_pick_service", "/task/execute_pick");
     this->declare_parameter<std::string>("reset_pick_session_service", "/task/reset_pick_session");
+    this->declare_parameter<std::string>("return_home_service", "/task/return_home");
+    this->declare_parameter<std::string>("return_named_target", "home");
     this->declare_parameter<std::string>("selected_pregrasp_pose_topic", "/grasp/selected_pregrasp_pose");
     this->declare_parameter<std::string>("selected_grasp_pose_topic", "/grasp/selected_grasp_pose");
     this->declare_parameter<std::string>("external_pregrasp_pose_array_topic", "/grasp/candidate_pregrasp_poses");
@@ -175,6 +179,8 @@ private:
     this->declare_parameter<double>("wrist_joint_max_delta_deg", 90.0);
     this->declare_parameter<double>("wrist_joint_relaxed_delta_deg", 90.0);
     this->declare_parameter<double>("orientation_constraint_tolerance_rad", 1.20);
+    this->declare_parameter<bool>("stage_position_only_target", true);
+    this->declare_parameter<bool>("pregrasp_position_only_target", true);
     this->declare_parameter<double>("pregrasp_backoff_m", 0.10);
     this->declare_parameter<double>("pregrasp_lift_m", 0.08);
     this->declare_parameter<double>("grasp_backoff_m", 0.04);
@@ -214,6 +220,7 @@ private:
     this->declare_parameter<bool>("prefer_external_grasp_candidates", false);
     this->declare_parameter<bool>("require_external_grasp_candidates", false);
     this->declare_parameter<double>("external_grasp_pose_timeout_sec", 3.0);
+    this->declare_parameter<double>("refresh_grasp_candidates_retry_sec", 1.5);
     this->declare_parameter<double>("external_semantic_score_weight", 0.8);
     this->declare_parameter<double>("external_confidence_score_weight", 0.6);
     this->declare_parameter<bool>("include_target_collision_object", false);
@@ -223,10 +230,14 @@ private:
 
     target_pose_topic_ = this->get_parameter("target_pose_topic").as_string();
     target_locked_topic_ = this->get_parameter("target_locked_topic").as_string();
+    refresh_grasp_candidates_topic_ =
+      this->get_parameter("refresh_grasp_candidates_topic").as_string();
     pick_active_topic_ = this->get_parameter("pick_active_topic").as_string();
     pick_status_topic_ = this->get_parameter("pick_status_topic").as_string();
     execute_pick_service_ = this->get_parameter("execute_pick_service").as_string();
     reset_pick_session_service_ = this->get_parameter("reset_pick_session_service").as_string();
+    return_home_service_ = this->get_parameter("return_home_service").as_string();
+    return_named_target_ = this->get_parameter("return_named_target").as_string();
     selected_pregrasp_pose_topic_ =
       this->get_parameter("selected_pregrasp_pose_topic").as_string();
     selected_grasp_pose_topic_ =
@@ -267,6 +278,10 @@ private:
       this->get_parameter("wrist_joint_relaxed_delta_deg").as_double();
     orientation_constraint_tolerance_rad_ =
       this->get_parameter("orientation_constraint_tolerance_rad").as_double();
+    stage_position_only_target_ =
+      this->get_parameter("stage_position_only_target").as_bool();
+    pregrasp_position_only_target_ =
+      this->get_parameter("pregrasp_position_only_target").as_bool();
     pregrasp_backoff_m_ = this->get_parameter("pregrasp_backoff_m").as_double();
     pregrasp_lift_m_ = this->get_parameter("pregrasp_lift_m").as_double();
     grasp_backoff_m_ = this->get_parameter("grasp_backoff_m").as_double();
@@ -332,6 +347,8 @@ private:
       this->get_parameter("require_external_grasp_candidates").as_bool();
     external_grasp_pose_timeout_sec_ =
       this->get_parameter("external_grasp_pose_timeout_sec").as_double();
+    refresh_grasp_candidates_retry_sec_ =
+      this->get_parameter("refresh_grasp_candidates_retry_sec").as_double();
     external_semantic_score_weight_ =
       this->get_parameter("external_semantic_score_weight").as_double();
     external_confidence_score_weight_ =
@@ -360,8 +377,16 @@ private:
       [this](const std_msgs::msg::Bool::SharedPtr msg) {
         target_locked_ = msg->data;
         if (target_locked_) {
+          if (suppress_target_relock_) {
+            RCLCPP_INFO_THROTTLE(
+              this->get_logger(),
+              *this->get_clock(),
+              3000,
+              "target re-lock ignored while failure/manual home hold is active");
+            return;
+          }
           try_arm_pick_session();
-        } else if (!executing_.load() && !completed_.load()) {
+        } else if (!pick_armed_.load() && !executing_.load() && !completed_.load()) {
           pick_armed_ = false;
           {
             std::scoped_lock<std::mutex> lock(target_mutex_);
@@ -369,6 +394,13 @@ private:
           }
           publish_pick_active();
           publish_pick_status("idle", "target lock released");
+        } else if (pick_armed_.load() && !executing_.load() && !completed_.load()) {
+          publish_pick_status(
+            "planning",
+            "target lock released after execute request; keeping latched target pose");
+          RCLCPP_INFO(
+            this->get_logger(),
+            "target lock released after execute request; preserving latched target pose");
         }
       });
 
@@ -423,6 +455,8 @@ private:
       });
 
     pick_active_pub_ = this->create_publisher<std_msgs::msg::Bool>(pick_active_topic_, 10);
+    refresh_grasp_candidates_pub_ =
+      this->create_publisher<std_msgs::msg::Bool>(refresh_grasp_candidates_topic_, 10);
     pick_status_pub_ = this->create_publisher<std_msgs::msg::String>(pick_status_topic_, latched_qos);
     execution_debug_markers_pub_ =
       this->create_publisher<visualization_msgs::msg::MarkerArray>(
@@ -464,12 +498,14 @@ private:
           target_pose = latched_target_pose_;
         }
 
+        suppress_target_relock_ = false;
         pick_armed_ = true;
         completed_ = false;
         publish_pick_active();
         publish_pick_status(
           "planning",
           "execute requested; waiting for external candidates and planning");
+        request_grasp_candidate_refresh("execute requested", true);
         response->success = true;
         std::ostringstream message;
         message << "pick armed from latched target pose ("
@@ -486,6 +522,7 @@ private:
         std::shared_ptr<std_srvs::srv::Trigger::Response> response)
       {
         clear_locked_joint_references();
+        suppress_target_relock_ = false;
         pick_armed_ = false;
         executing_ = false;
         completed_ = false;
@@ -503,6 +540,31 @@ private:
         }
         response->success = true;
       });
+    return_home_srv_ = this->create_service<std_srvs::srv::Trigger>(
+      return_home_service_,
+      [this](
+        const std::shared_ptr<std_srvs::srv::Trigger::Request>,
+        std::shared_ptr<std_srvs::srv::Trigger::Response> response)
+      {
+        suppress_target_relock_ = true;
+        clear_locked_joint_references();
+        pick_armed_ = false;
+        executing_ = false;
+        completed_ = false;
+        {
+          std::scoped_lock<std::mutex> lock(target_mutex_);
+          has_latched_target_pose_ = false;
+        }
+        publish_pick_active();
+        (void)execute_named_target(*gripper_group_, "open", "open gripper before return home");
+        const bool ok = execute_named_target(
+          *arm_group_, return_named_target_, "return arm to named home pose");
+        publish_pick_status(
+          ok ? "idle" : "error",
+          ok ? "arm returned to named home pose" : "failed to return arm to named home pose");
+        response->success = ok;
+        response->message = ok ? "arm returned to named home pose" : "failed to return arm to named home pose";
+      });
     publish_pick_active();
     publish_pick_status(
       "idle",
@@ -519,6 +581,7 @@ private:
             double age_sec = -1.0;
             std::size_t candidate_count = 0;
             if (!has_fresh_external_grasp_candidates(&age_sec, &candidate_count)) {
+              request_grasp_candidate_refresh("planning waiting for fresh external grasp candidates");
               RCLCPP_INFO_THROTTLE(
                 this->get_logger(), *this->get_clock(), 3000,
                 "waiting for external grasp candidates: count=%zu age=%.2fs timeout=%.2fs",
@@ -583,6 +646,11 @@ private:
       wrist_joint_name_.c_str(),
       lock_wrist_joint_after_target_lock_ ? "true" : "false",
       wrist_joint_max_delta_deg_, wrist_joint_relaxed_delta_deg_);
+    RCLCPP_INFO(
+      this->get_logger(),
+      "planning target modes: stage_position_only=%s pregrasp_position_only=%s",
+      stage_position_only_target_ ? "true" : "false",
+      pregrasp_position_only_target_ ? "true" : "false");
   }
 
   static std::string escape_json_string(const std::string & value)
@@ -620,7 +688,12 @@ private:
     pick_active_pub_->publish(msg);
   }
 
-  void publish_pick_status(const std::string & phase, const std::string & message)
+  void publish_pick_status(
+    const std::string & phase,
+    const std::string & message,
+    int progress_current = -1,
+    int progress_total = -1,
+    const std::string & progress_stage = "")
   {
     std_msgs::msg::String msg;
     std::ostringstream payload;
@@ -634,8 +707,18 @@ private:
             << "\"executing\":" << (executing_.load() ? "true" : "false") << ","
             << "\"completed\":" << (completed_.load() ? "true" : "false") << ","
             << "\"has_latched_target_pose\":"
-            << (has_latched_target_pose_ ? "true" : "false")
-            << "}";
+            << (has_latched_target_pose_ ? "true" : "false");
+    if (progress_total > 0 && progress_current >= 0) {
+      const int bounded_current = std::max(0, std::min(progress_current, progress_total));
+      const int progress_percent = static_cast<int>(
+        std::lround(100.0 * static_cast<double>(bounded_current) /
+        static_cast<double>(std::max(1, progress_total))));
+      payload << ",\"progress_current\":" << bounded_current
+              << ",\"progress_total\":" << progress_total
+              << ",\"progress_percent\":" << progress_percent
+              << ",\"progress_stage\":\"" << escape_json_string(progress_stage) << "\"";
+    }
+    payload << "}";
     msg.data = payload.str();
     pick_status_pub_->publish(msg);
   }
@@ -721,30 +804,43 @@ private:
       this->get_logger(),
       "executing selected candidate %zu with live replanning between phases",
       pregrasp_option.candidate_index);
-    publish_pick_status(
-      "executing",
-      "executing selected stage, pregrasp, grasp, retreat, and lift");
+    if (pregrasp_option.skip_stage) {
+      publish_pick_status(
+        "executing",
+        "executing direct pregrasp, grasp, retreat, and lift");
+      if (!execute_preplanned_arm_plan(
+            pregrasp_option.pregrasp_plan,
+            pregrasp_option.pregrasp_label,
+            true))
+      {
+        return fail_sequence("failed to execute direct pregrasp plan");
+      }
+    } else {
+      publish_pick_status(
+        "executing",
+        "executing selected stage, pregrasp, grasp, retreat, and lift");
 
-    if (!execute_stage_position_target_with_gripper_open(
-          pregrasp_option.stage, pregrasp_option.stage_orientation, pregrasp_option.stage_label))
-    {
-      return fail_sequence("failed to execute selected stage plan");
-    }
+      if (!execute_stage_position_target_with_gripper_open(
+            pregrasp_option.stage, pregrasp_option.stage_orientation, pregrasp_option.stage_label))
+      {
+        return fail_sequence("failed to execute selected stage plan");
+      }
 
-    const auto post_stage_pose = arm_group_->getCurrentPose(ee_link_).pose;
-    RCLCPP_DEBUG(
-      this->get_logger(),
-      "post-stage ee pose: (%.3f, %.3f, %.3f)",
-      post_stage_pose.position.x,
-      post_stage_pose.position.y,
-      post_stage_pose.position.z);
+      const auto post_stage_pose = arm_group_->getCurrentPose(ee_link_).pose;
+      RCLCPP_DEBUG(
+        this->get_logger(),
+        "post-stage ee pose: (%.3f, %.3f, %.3f)",
+        post_stage_pose.position.x,
+        post_stage_pose.position.y,
+        post_stage_pose.position.z);
 
-    if (!execute_position_target(
-          pregrasp_option.pregrasp,
-          pregrasp_option.pregrasp_orientation,
-          pregrasp_option.pregrasp_label))
-    {
-      return fail_sequence("failed to execute selected pregrasp plan");
+      if (!execute_position_target(
+            pregrasp_option.pregrasp,
+            pregrasp_option.pregrasp_orientation,
+            pregrasp_option.pregrasp_label))
+      {
+        return fail_sequence("failed to execute selected pregrasp plan");
+      }
     }
 
     if (debug_stop_after_pregrasp_) {
@@ -940,7 +1036,14 @@ private:
         const auto & attempt = joint_lock_attempts[index];
         const std::string attempt_label =
           index == 0 ? label : label + attempt.label_suffix;
-        if (execute_position_target_attempt(target_point, target_orientation, attempt_label, attempt)) {
+        if (
+          execute_position_target_attempt(
+            target_point,
+            target_orientation,
+            attempt_label,
+            attempt,
+            pregrasp_position_only_target_))
+        {
           return true;
         }
       }
@@ -948,7 +1051,11 @@ private:
     }
 
     return execute_position_target_attempt(
-      target_point, target_orientation, label, JointConstraintAttempt{});
+      target_point,
+      target_orientation,
+      label,
+      JointConstraintAttempt{},
+      pregrasp_position_only_target_);
   }
 
   bool execute_stage_position_target_with_gripper_open(
@@ -963,7 +1070,11 @@ private:
         const std::string attempt_label =
           index == 0 ? label : label + attempt.label_suffix;
         if (execute_stage_position_target_attempt(
-            target_point, target_orientation, attempt_label, attempt))
+            target_point,
+            target_orientation,
+            attempt_label,
+            attempt,
+            stage_position_only_target_))
         {
           return true;
         }
@@ -972,7 +1083,11 @@ private:
     }
 
     return execute_stage_position_target_attempt(
-      target_point, target_orientation, label, JointConstraintAttempt{});
+      target_point,
+      target_orientation,
+      label,
+      JointConstraintAttempt{},
+      stage_position_only_target_);
   }
 
   bool execute_cartesian_segment(
@@ -1235,6 +1350,7 @@ private:
 
   void fail_sequence(const std::string & reason)
   {
+    suppress_target_relock_ = true;
     clear_locked_joint_references();
     pick_armed_ = false;
     executing_ = false;
@@ -1243,20 +1359,37 @@ private:
     publish_pick_active();
     publish_pick_status("error", reason);
     RCLCPP_WARN(this->get_logger(), "pick sequence aborted: %s", reason.c_str());
+    (void)execute_named_target(*gripper_group_, "open", "open gripper after failure");
+    const bool returned_home = execute_named_target(
+      *arm_group_, return_named_target_, "return arm to named home pose after failure");
+    if (returned_home) {
+      RCLCPP_WARN(this->get_logger(), "arm returned to named home pose after failure");
+    } else {
+      RCLCPP_WARN(this->get_logger(), "failed to return arm to named home pose after failure");
+    }
   }
 
   bool execute_position_target_attempt(
     const std::array<double, 3> & target_point,
     const geometry_msgs::msg::Quaternion & target_orientation,
     const std::string & label,
-    const JointConstraintAttempt & joint_attempt)
+    const JointConstraintAttempt & joint_attempt,
+    bool position_only_target)
   {
     constexpr int kExecutionAttempts = 2;
     for (int execution_attempt = 0; execution_attempt < kExecutionAttempts; ++execution_attempt) {
       moveit::planning_interface::MoveGroupInterface::Plan plan;
       const std::string attempt_label =
         execution_attempt == 0 ? label : label + " replanned";
-      if (!plan_pose_target_attempt(target_point, target_orientation, joint_attempt, plan)) {
+      if (
+        !plan_pose_target_attempt(
+          target_point,
+          target_orientation,
+          joint_attempt,
+          plan,
+          nullptr,
+          position_only_target))
+      {
         RCLCPP_WARN(this->get_logger(), "%s: planning failed", attempt_label.c_str());
         continue;
       }
@@ -1280,14 +1413,23 @@ private:
     const std::array<double, 3> & target_point,
     const geometry_msgs::msg::Quaternion & target_orientation,
     const std::string & label,
-    const JointConstraintAttempt & joint_attempt)
+    const JointConstraintAttempt & joint_attempt,
+    bool position_only_target)
   {
     constexpr int kExecutionAttempts = 2;
     for (int execution_attempt = 0; execution_attempt < kExecutionAttempts; ++execution_attempt) {
       moveit::planning_interface::MoveGroupInterface::Plan plan;
       const std::string attempt_label =
         execution_attempt == 0 ? label : label + " replanned";
-      if (!plan_pose_target_attempt(target_point, target_orientation, joint_attempt, plan)) {
+      if (
+        !plan_pose_target_attempt(
+          target_point,
+          target_orientation,
+          joint_attempt,
+          plan,
+          nullptr,
+          position_only_target))
+      {
         RCLCPP_WARN(this->get_logger(), "%s: planning failed", attempt_label.c_str());
         continue;
       }
@@ -1494,6 +1636,31 @@ private:
     return false;
   }
 
+  bool request_grasp_candidate_refresh(const std::string & reason, bool force = false)
+  {
+    if (!refresh_grasp_candidates_pub_) {
+      return false;
+    }
+    if (!require_external_grasp_candidates_ && !prefer_external_grasp_candidates_) {
+      return false;
+    }
+
+    const double now_sec = this->get_clock()->now().seconds();
+    if (
+      !force && last_grasp_refresh_request_sec_ > 0.0 &&
+      (now_sec - last_grasp_refresh_request_sec_) < refresh_grasp_candidates_retry_sec_)
+    {
+      return false;
+    }
+
+    std_msgs::msg::Bool refresh_msg;
+    refresh_msg.data = true;
+    refresh_grasp_candidates_pub_->publish(refresh_msg);
+    last_grasp_refresh_request_sec_ = now_sec;
+    RCLCPP_INFO(this->get_logger(), "requested grasp candidate refresh: %s", reason.c_str());
+    return true;
+  }
+
   void try_arm_pick_session()
   {
     if (pick_armed_.load() || executing_.load() || completed_.load() || !target_locked_) {
@@ -1633,7 +1800,8 @@ private:
     const geometry_msgs::msg::Quaternion & target_orientation,
     const JointConstraintAttempt & joint_attempt,
     moveit::planning_interface::MoveGroupInterface::Plan & plan,
-    const moveit::core::RobotStatePtr & start_state = nullptr)
+    const moveit::core::RobotStatePtr & start_state = nullptr,
+    bool position_only_target = false)
   {
     if (start_state) {
       arm_group_->setStartState(*start_state);
@@ -1653,7 +1821,15 @@ private:
     target_pose.position.y = target_point[1];
     target_pose.position.z = target_point[2];
     target_pose.orientation = normalize_quaternion(target_orientation);
-    arm_group_->setPoseTarget(target_pose, ee_link_);
+    if (position_only_target) {
+      arm_group_->setPositionTarget(
+        target_pose.position.x,
+        target_pose.position.y,
+        target_pose.position.z,
+        ee_link_);
+    } else {
+      arm_group_->setPoseTarget(target_pose, ee_link_);
+    }
     const bool planned = static_cast<bool>(arm_group_->plan(plan));
     arm_group_->clearPoseTargets();
     arm_group_->clearPathConstraints();
@@ -2327,6 +2503,91 @@ private:
     return std::max(pregrasp_score_floor_, raw_score);
   }
 
+  double compute_direct_pregrasp_option_score(
+    const geometry_msgs::msg::Pose & current_pose,
+    const std::array<double, 3> & target_point,
+    const PregraspVariant & variant,
+    const moveit::planning_interface::MoveGroupInterface::Plan & pregrasp_plan,
+    const moveit::core::RobotStatePtr & pregrasp_end_state,
+    double * camera_penalty_out = nullptr,
+    double * camera_stability_bonus_out = nullptr,
+    double * primary_joint_excursion_cost_out = nullptr,
+    double * secondary_joint_excursion_cost_out = nullptr,
+    double * wrist_joint_excursion_cost_out = nullptr) const
+  {
+    const double total_duration_sec = compute_plan_duration_sec(pregrasp_plan);
+    const double path_distance_m = compute_point_distance(current_pose.position, variant.pregrasp);
+    const double approach_distance_m = compute_point_distance(variant.pregrasp, variant.grasp);
+    const double primary_joint_cost =
+      compute_focus_joint_delta_rad(pregrasp_plan, lock_joint_name_);
+    const double wrist_joint_cost =
+      compute_focus_joint_delta_rad(pregrasp_plan, wrist_joint_name_);
+    const double primary_joint_excursion_cost =
+      compute_focus_joint_excursion_rad(pregrasp_plan, lock_joint_name_);
+    const double secondary_joint_excursion_cost =
+      compute_focus_joint_excursion_rad(pregrasp_plan, secondary_joint_name_);
+    const double wrist_joint_excursion_cost =
+      compute_focus_joint_excursion_rad(pregrasp_plan, wrist_joint_name_);
+    const double endpoint_camera_penalty =
+      1.0 * compute_camera_pose_penalty(pregrasp_end_state, target_point);
+    const auto pregrasp_start_state = arm_group_->getCurrentState(0.5);
+    double pregrasp_max_tilt_rad = M_PI;
+    const double trajectory_camera_penalty =
+      compute_camera_trajectory_penalty(
+      pregrasp_plan, pregrasp_start_state, &pregrasp_max_tilt_rad);
+    const double camera_penalty = endpoint_camera_penalty + trajectory_camera_penalty;
+    const double stable_threshold_rad = camera_stable_tilt_reward_deg_ * M_PI / 180.0;
+    const double camera_stability_bonus =
+      pregrasp_max_tilt_rad <= stable_threshold_rad ? camera_stable_reward_bonus_ : 0.0;
+    const double clearance_penalty =
+      std::max(0.0, variant.pregrasp[2] - (variant.grasp[2] + 0.08));
+    const double duration_penalty = plan_duration_penalty_weight_ * total_duration_sec;
+    const double path_penalty = path_distance_penalty_weight_ * path_distance_m;
+    const double approach_penalty = approach_distance_penalty_weight_ * approach_distance_m;
+    const double primary_joint_delta_penalty =
+      primary_joint_delta_penalty_weight_ * primary_joint_cost;
+    const double wrist_joint_delta_penalty =
+      wrist_joint_delta_penalty_weight_ * wrist_joint_cost;
+    const double primary_joint_excursion_penalty =
+      primary_joint_excursion_penalty_weight_ * primary_joint_excursion_cost;
+    const double secondary_joint_excursion_penalty =
+      secondary_joint_excursion_penalty_weight_ * secondary_joint_excursion_cost;
+    const double wrist_joint_excursion_penalty =
+      wrist_joint_excursion_penalty_weight_ * wrist_joint_excursion_cost;
+    const double clearance_cost = clearance_penalty_weight_ * clearance_penalty;
+    const double raw_score =
+      pregrasp_score_base_
+      - duration_penalty
+      - path_penalty
+      - approach_penalty
+      - primary_joint_delta_penalty
+      - wrist_joint_delta_penalty
+      - primary_joint_excursion_penalty
+      - secondary_joint_excursion_penalty
+      - wrist_joint_excursion_penalty
+      - camera_penalty
+      - clearance_cost
+      + camera_stability_bonus;
+
+    if (camera_penalty_out != nullptr) {
+      *camera_penalty_out = camera_penalty;
+    }
+    if (camera_stability_bonus_out != nullptr) {
+      *camera_stability_bonus_out = camera_stability_bonus;
+    }
+    if (primary_joint_excursion_cost_out != nullptr) {
+      *primary_joint_excursion_cost_out = primary_joint_excursion_cost;
+    }
+    if (secondary_joint_excursion_cost_out != nullptr) {
+      *secondary_joint_excursion_cost_out = secondary_joint_excursion_cost;
+    }
+    if (wrist_joint_excursion_cost_out != nullptr) {
+      *wrist_joint_excursion_cost_out = wrist_joint_excursion_cost;
+    }
+
+    return std::max(pregrasp_score_floor_, raw_score);
+  }
+
   ExternalProposalMetadata build_external_proposal_metadata(
     const tactile_interfaces::msg::GraspProposal & proposal) const
   {
@@ -2370,6 +2631,103 @@ private:
     return
       external_semantic_score_weight_ * semantic_score +
       external_confidence_score_weight_ * confidence_score;
+  }
+
+  std::string format_xyz(const std::array<double, 3> & point) const
+  {
+    std::ostringstream stream;
+    stream << std::fixed << std::setprecision(3)
+           << "(" << point[0] << ", " << point[1] << ", " << point[2] << ")";
+    return stream.str();
+  }
+
+  std::string format_external_debug_entry(
+    const ExternalEvaluationDebugInfo & entry) const
+  {
+    const double input_semantic_score =
+      entry.external_metadata.has_value() ? entry.external_metadata->semantic_score :
+      entry.semantic_score;
+    const double input_confidence_score =
+      entry.external_metadata.has_value() ? entry.external_metadata->confidence_score :
+      entry.confidence_score;
+
+    std::ostringstream stream;
+    stream << std::fixed << std::setprecision(3)
+           << "candidate=" << entry.candidate_index
+           << " label=" << entry.candidate_label
+           << " status=" << entry.status;
+    if (!entry.variant_label.empty()) {
+      stream << " variant=" << entry.variant_label;
+    }
+    stream << " stage=" << format_xyz(entry.stage)
+           << " pregrasp=" << format_xyz(entry.pregrasp)
+           << " grasp=" << format_xyz(entry.grasp)
+           << " score=" << entry.score
+           << " semantic=" << input_semantic_score
+           << " confidence=" << input_confidence_score
+           << " bonus=" << entry.proposal_bonus
+           << " fail[s_plan=" << entry.stage_plan_failures
+           << " s_state=" << entry.stage_end_state_failures
+           << " p_plan=" << entry.pregrasp_plan_failures
+           << " p_state=" << entry.pregrasp_end_state_failures
+           << "]";
+    return stream.str();
+  }
+
+  std::string format_progress_bar(
+    std::size_t completed,
+    std::size_t total,
+    std::size_t width = 10) const
+  {
+    if (width == 0) {
+      width = 10;
+    }
+    const std::size_t safe_total = std::max<std::size_t>(1, total);
+    const double ratio =
+      std::clamp(static_cast<double>(completed) / static_cast<double>(safe_total), 0.0, 1.0);
+    const std::size_t filled =
+      std::min(width, static_cast<std::size_t>(std::llround(ratio * static_cast<double>(width))));
+    return "[" + std::string(filled, '#') + std::string(width - filled, '-') + "]";
+  }
+
+  void log_planning_progress(
+    const std::string & stage,
+    std::size_t completed,
+    std::size_t total,
+    std::size_t feasible,
+    const std::string & label,
+    const std::string & status)
+  {
+    const std::size_t safe_total = std::max<std::size_t>(1, total);
+    const int percent = static_cast<int>(
+      std::llround(
+        100.0 * static_cast<double>(std::min(completed, safe_total)) /
+        static_cast<double>(safe_total)));
+    RCLCPP_INFO(
+      this->get_logger(),
+      "%s progress %s %zu/%zu (%d%%) feasible=%zu last=%s status=%s",
+      stage.c_str(),
+      format_progress_bar(completed, total).c_str(),
+      completed,
+      total,
+      percent,
+      feasible,
+      label.c_str(),
+      status.c_str());
+    if (total > 0) {
+      std::ostringstream message;
+      message << stage << " " << format_progress_bar(completed, total)
+              << " " << completed << "/" << total
+              << " feasible=" << feasible
+              << " last=" << label
+              << " status=" << status;
+      publish_pick_status(
+        "planning",
+        message.str(),
+        static_cast<int>(completed),
+        static_cast<int>(total),
+        stage);
+    }
   }
 
   std::optional<PlannedApproachOption> select_external_pregrasp_option(
@@ -2489,35 +2847,18 @@ private:
         debug_info.external_metadata = external_metadata;
 
         for (const auto & variant : variants) {
-          const auto stage_point = compute_stage_point(current_pose, variant.pregrasp);
-          const std::string stage_label = "move to stage " + candidate_label;
           const std::string pregrasp_label =
-            "move to pregrasp " + candidate_label + variant.label_suffix;
+            "move directly to pregrasp " + candidate_label + variant.label_suffix;
 
           for (const auto & attempt : attempts) {
-            moveit::planning_interface::MoveGroupInterface::Plan stage_plan;
-            if (!plan_pose_target_attempt(
-                stage_point, variant.pregrasp_orientation, attempt, stage_plan))
-            {
-              ++candidate_stage_plan_failures;
-              ++stage_plan_failures;
-              continue;
-            }
-
-            const auto stage_end_state = build_plan_end_state(stage_plan);
-            if (!stage_end_state) {
-              ++candidate_stage_end_state_failures;
-              ++stage_end_state_failures;
-              continue;
-            }
-
             moveit::planning_interface::MoveGroupInterface::Plan pregrasp_plan;
             if (!plan_pose_target_attempt(
                 variant.pregrasp,
                 variant.pregrasp_orientation,
                 attempt,
                 pregrasp_plan,
-                stage_end_state))
+                nullptr,
+                pregrasp_position_only_target_))
             {
               ++candidate_pregrasp_plan_failures;
               ++pregrasp_plan_failures;
@@ -2536,14 +2877,11 @@ private:
             double primary_joint_excursion_cost = 0.0;
             double secondary_joint_excursion_cost = 0.0;
             double wrist_joint_excursion_cost = 0.0;
-            const double base_score = compute_pregrasp_option_score(
+            const double base_score = compute_direct_pregrasp_option_score(
               current_pose,
               target_point,
-              stage_point,
               variant,
-              stage_plan,
               pregrasp_plan,
-              stage_end_state,
               pregrasp_end_state,
               &camera_penalty,
               &camera_stability_bonus,
@@ -2562,7 +2900,7 @@ private:
             debug_info.feasible = true;
             debug_info.status = "feasible";
             debug_info.variant_label = variant.label_suffix.empty() ? "base" : variant.label_suffix;
-            debug_info.stage = stage_point;
+            debug_info.stage = variant.pregrasp;
             debug_info.pregrasp = variant.pregrasp;
             debug_info.grasp = variant.grasp;
             debug_info.score = score;
@@ -2573,15 +2911,15 @@ private:
             if (!best_option.has_value() || score > best_option->score) {
               best_option = PlannedApproachOption{
                 candidate_index,
-                stage_point,
+                variant.pregrasp,
                 variant.pregrasp,
                 variant.grasp,
                 variant.pregrasp_orientation,
                 variant.pregrasp_orientation,
                 variant.grasp_orientation,
-                stage_label,
+                "skip stage (direct to pregrasp) " + candidate_label,
                 pregrasp_label,
-                stage_plan,
+                moveit::planning_interface::MoveGroupInterface::Plan{},
                 pregrasp_plan,
                 score,
                 camera_penalty,
@@ -2593,12 +2931,13 @@ private:
                 external_confidence_score,
                 external_proposal_bonus,
                 external_metadata,
+                true,
               };
             }
 
             RCLCPP_DEBUG(
               this->get_logger(),
-              "%s feasible: variant=%s score=%.2f base=%.2f semantic=%.2f confidence=%.2f bonus=%.2f stage=(%.3f, %.3f, %.3f) pregrasp=(%.3f, %.3f, %.3f) grasp=(%.3f, %.3f, %.3f)",
+              "%s feasible direct-pregrasp: variant=%s score=%.2f base=%.2f semantic=%.2f confidence=%.2f bonus=%.2f pregrasp=(%.3f, %.3f, %.3f) grasp=(%.3f, %.3f, %.3f)",
               candidate_label.c_str(),
               variant.label_suffix.empty() ? "base" : variant.label_suffix.c_str(),
               score,
@@ -2606,7 +2945,6 @@ private:
               external_semantic_score,
               external_confidence_score,
               external_proposal_bonus,
-              stage_point[0], stage_point[1], stage_point[2],
               variant.pregrasp[0], variant.pregrasp[1], variant.pregrasp[2],
               variant.grasp[0], variant.grasp[1], variant.grasp[2]);
             break;
@@ -2626,24 +2964,25 @@ private:
             debug_info.status = "pregrasp end-state fail";
           } else if (candidate_pregrasp_plan_failures > 0) {
             debug_info.status = "pregrasp plan fail";
-          } else if (candidate_stage_end_state_failures > 0) {
-            debug_info.status = "stage end-state fail";
-          } else if (candidate_stage_plan_failures > 0) {
-            debug_info.status = "stage plan fail";
           } else {
             debug_info.status = "not executable";
           }
           RCLCPP_DEBUG(
             this->get_logger(),
-            "%s rejected: stage_plan_fail=%zu stage_end_state_fail=%zu pregrasp_plan_fail=%zu pregrasp_end_state_fail=%zu",
+            "%s rejected direct-pregrasp: pregrasp_plan_fail=%zu pregrasp_end_state_fail=%zu",
             candidate_label.c_str(),
-            candidate_stage_plan_failures,
-            candidate_stage_end_state_failures,
             candidate_pregrasp_plan_failures,
             candidate_pregrasp_end_state_failures);
         }
         debug_entries.push_back(debug_info);
         publish_external_execution_markers(debug_entries, best_option);
+        log_planning_progress(
+          "planning/external",
+          candidates_tested,
+          candidates_received,
+          candidates_feasible,
+          candidate_label,
+          debug_info.status);
       };
 
     if (have_proposal_array) {
@@ -2818,6 +3157,12 @@ private:
       stage_end_state_failures,
       pregrasp_plan_failures,
       pregrasp_end_state_failures);
+    for (const auto & entry : debug_entries) {
+      RCLCPP_WARN(
+        this->get_logger(),
+        "external grasp evaluation detail: %s",
+        format_external_debug_entry(entry).c_str());
+    }
     return std::nullopt;
   }
 
@@ -2835,6 +3180,7 @@ private:
     for (std::size_t candidate_index = 0; candidate_index < candidates.size(); ++candidate_index) {
       const auto & candidate = candidates[candidate_index];
       const auto pregrasp_variants = build_local_pregrasp_variants(candidate);
+      bool candidate_feasible = false;
 
       for (const auto & variant : pregrasp_variants) {
         ++evaluation.tested_options;
@@ -2848,7 +3194,12 @@ private:
         for (const auto & attempt : attempts) {
           moveit::planning_interface::MoveGroupInterface::Plan stage_plan;
           if (!plan_pose_target_attempt(
-              stage_point, variant.pregrasp_orientation, attempt, stage_plan))
+              stage_point,
+              variant.pregrasp_orientation,
+              attempt,
+              stage_plan,
+              nullptr,
+              stage_position_only_target_))
           {
             continue;
           }
@@ -2864,7 +3215,8 @@ private:
               variant.pregrasp_orientation,
               attempt,
               pregrasp_plan,
-              stage_end_state))
+              stage_end_state,
+              pregrasp_position_only_target_))
           {
             continue;
           }
@@ -2917,9 +3269,18 @@ private:
             0.0,
             std::nullopt,
           });
+          candidate_feasible = true;
           break;
         }
       }
+
+      log_planning_progress(
+        "planning/internal",
+        candidate_index + 1,
+        candidates.size(),
+        evaluation.feasible_count,
+        "candidate " + std::to_string(candidate_index + 1),
+        candidate_feasible ? "feasible" : "rejected");
     }
 
     std::sort(
@@ -3013,10 +3374,13 @@ private:
 
   std::string target_pose_topic_;
   std::string target_locked_topic_;
+  std::string refresh_grasp_candidates_topic_;
   std::string pick_active_topic_;
   std::string pick_status_topic_;
   std::string execute_pick_service_;
   std::string reset_pick_session_service_;
+  std::string return_home_service_;
+  std::string return_named_target_{"home"};
   std::string selected_pregrasp_pose_topic_;
   std::string selected_grasp_pose_topic_;
   std::string external_pregrasp_pose_array_topic_;
@@ -3043,6 +3407,8 @@ private:
   double wrist_joint_max_delta_deg_{90.0};
   double wrist_joint_relaxed_delta_deg_{90.0};
   double orientation_constraint_tolerance_rad_{1.20};
+  bool stage_position_only_target_{true};
+  bool pregrasp_position_only_target_{true};
   double pregrasp_backoff_m_{0.10};
   double pregrasp_lift_m_{0.08};
   double grasp_backoff_m_{0.04};
@@ -3082,6 +3448,7 @@ private:
   bool prefer_external_grasp_candidates_{false};
   bool require_external_grasp_candidates_{false};
   double external_grasp_pose_timeout_sec_{3.0};
+  double refresh_grasp_candidates_retry_sec_{1.5};
   double external_semantic_score_weight_{0.8};
   double external_confidence_score_weight_{0.6};
   bool include_target_collision_object_{false};
@@ -3101,10 +3468,12 @@ private:
   rclcpp::Subscription<tactile_interfaces::msg::GraspProposalArray>::SharedPtr
     external_grasp_proposal_array_sub_;
   rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr pick_active_pub_;
+  rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr refresh_grasp_candidates_pub_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr pick_status_pub_;
   rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr execution_debug_markers_pub_;
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr execute_pick_srv_;
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr reset_pick_session_srv_;
+  rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr return_home_srv_;
   rclcpp::TimerBase::SharedPtr check_timer_;
 
   std::mutex target_mutex_;
@@ -3132,7 +3501,9 @@ private:
   std::atomic_bool pick_armed_{false};
   std::atomic_bool executing_{false};
   std::atomic_bool completed_{false};
+  bool suppress_target_relock_{false};
   double latest_external_grasp_update_sec_{0.0};
+  double last_grasp_refresh_request_sec_{0.0};
 };
 
 int main(int argc, char ** argv)
