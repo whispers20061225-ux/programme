@@ -2,6 +2,10 @@ std_msgs/Header header
 string task
 string target_label
 string target_hint
+int32 target_instance_track_id
+int32[] target_instance_bbox_xyxy
+int32[] target_instance_point_px
+string target_instance_source
 string[] constraints
 string[] excluded_labels
 float32 confidence

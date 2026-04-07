@@ -1,0 +1,15 @@
+std_msgs/Header header
+int32 candidate_id
+geometry_msgs/PoseStamped pregrasp_pose
+geometry_msgs/PoseStamped grasp_pose
+float32 grasp_quality
+float32 affordance_score
+float32 forbidden_overlap
+float32 transport_feasibility
+float32 instance_consistency
+float32 final_score
+string grasp_family
+string approach_dir
+bool satisfies_part_constraint
+bool satisfies_transport_constraint
+string debug_json

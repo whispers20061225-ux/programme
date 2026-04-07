@@ -121,6 +121,7 @@ export async function postOverride(draft: SemanticDraft): Promise<UiState> {
       task: draft.task,
       target_label: draft.target_label,
       target_hint: draft.target_hint,
+      target_instance: draft.target_instance,
       gripper: draft.gripper,
       constraints: draft.constraints,
       excluded_labels: draft.excluded_labels,

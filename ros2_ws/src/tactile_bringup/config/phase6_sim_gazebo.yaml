@@ -20,8 +20,8 @@ arm_sim_driver_node:
     arm_num_joints: 6
     command_default_duration_ms: 1000
     home_duration_ms: 3500
-    home_joint_angles: [3.0, -62.0, 102.0, 82.0, 0.0, -68.754936]
-    initial_joint_angles: [3.0, -62.0, 102.0, 82.0, 0.0, -68.754936]
+    home_joint_angles: [3.0, -58.0, 89.405064, 96.0, 0.0, -68.754936]
+    initial_joint_angles: [3.0, -58.0, 89.405064, 96.0, 0.0, -68.754936]
     joint_zero_offsets_deg: [-90.0, 0.0, 0.0, 0.0, -90.0, 0.0]
     joint_names: ["arm_joint1", "arm_joint2", "arm_joint3", "arm_joint4", "arm_joint5", "grip_joint"]
     enforce_angle_limits: true
@@ -31,7 +31,7 @@ arm_sim_driver_node:
     trajectory_action_name: "/joint_trajectory_controller/follow_joint_trajectory"
     action_server_timeout_sec: 5.0
     trajectory_result_timeout_sec: 18.0
-    joint_state_stale_timeout_sec: 1.5
+    joint_state_stale_timeout_sec: 3.0
     state_topic: "/arm/state"
     health_topic: "/system/health"
     simulation_mode_label: "phase6_sim_gazebo"

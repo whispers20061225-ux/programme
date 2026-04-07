@@ -1,3 +1,4 @@
+import ast
 import base64
 import asyncio
 import copy
@@ -11,6 +12,7 @@ from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
+from urllib.parse import urlsplit, urlunsplit
 from uuid import uuid4
 
 import cv2
@@ -21,6 +23,7 @@ from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
+from rclpy.action import ActionClient
 try:
     from ament_index_python.packages import PackageNotFoundError, get_package_share_directory
 except Exception:  # noqa: BLE001
@@ -28,22 +31,132 @@ except Exception:  # noqa: BLE001
     get_package_share_directory = None
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
-from rclpy.qos import HistoryPolicy, QoSProfile, ReliabilityPolicy
+from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
 from sensor_msgs.msg import Image
 from std_msgs.msg import Bool, String
 from std_srvs.srv import SetBool, Trigger
 from tf2_msgs.msg import TFMessage
 from ros_gz_interfaces.msg import Entity
 from ros_gz_interfaces.srv import ControlWorld, SetEntityPose
+from tactile_interfaces.action import ExecuteTask
 from tactile_interfaces.msg import (
     ArmState,
     DetectionResult,
     GraspProposalArray,
     SemanticTask,
     SystemHealth,
+    TaskExecutionStatus,
+    TaskGoal,
     TactileRaw,
 )
 from tactile_interfaces.srv import MoveArmJoints
+
+
+def _normalized_secret(value: Any) -> str:
+    secret = str(value or "").strip()
+    if not secret or secret.upper() in {"EMPTY", "NONE", "NULL"}:
+        return ""
+    return secret
+
+
+def _normalize_openai_compatible_endpoint(value: Any) -> str:
+    endpoint = str(value or "").strip()
+    if not endpoint:
+        return ""
+    if endpoint.endswith("/v1"):
+        return endpoint + "/chat/completions"
+    if endpoint.endswith("/chat/completions"):
+        return endpoint
+    if endpoint.endswith("/"):
+        endpoint = endpoint[:-1]
+    if endpoint.endswith("/compatible-mode"):
+        return endpoint + "/v1/chat/completions"
+    if endpoint.endswith("/v1/models"):
+        return endpoint[: -len("/models")] + "/chat/completions"
+    return endpoint
+
+
+def _load_remote_vlm_file() -> dict[str, str]:
+    env_file = os.path.expanduser("~/.config/programme/remote_vlm.env")
+    values: dict[str, str] = {}
+    try:
+        with open(env_file, "r", encoding="utf-8") as handle:
+            for raw_line in handle:
+                line = raw_line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                if line.startswith("export "):
+                    line = line[len("export ") :].strip()
+                if "=" not in line:
+                    continue
+                key, value = line.split("=", 1)
+                key = key.strip()
+                value = value.strip()
+                if len(value) >= 2 and value[0] == value[-1] and value[0] in {'"', "'"}:
+                    value = value[1:-1]
+                if key and value:
+                    values[key] = value
+    except OSError:
+        return {}
+    return values
+
+
+def _resolve_dialog_runtime_config(
+    *,
+    endpoint: Any,
+    model_name: Any,
+    api_key: Any,
+) -> tuple[str, str, str]:
+    resolved_endpoint = _normalize_openai_compatible_endpoint(endpoint)
+    resolved_model = str(model_name or "").strip()
+    resolved_api_key = _normalized_secret(api_key)
+    file_values = _load_remote_vlm_file()
+
+    env_api_key = _normalized_secret(
+        os.getenv("PROGRAMME_DIALOG_API_KEY")
+        or file_values.get("PROGRAMME_DIALOG_API_KEY")
+        or os.getenv("PROGRAMME_REMOTE_VLM_API_KEY")
+        or file_values.get("PROGRAMME_REMOTE_VLM_API_KEY")
+        or os.getenv("DASHSCOPE_API_KEY")
+        or file_values.get("DASHSCOPE_API_KEY")
+        or os.getenv("OPENAI_API_KEY")
+        or file_values.get("OPENAI_API_KEY")
+    )
+    env_endpoint = _normalize_openai_compatible_endpoint(
+        os.getenv("PROGRAMME_DIALOG_MODEL_ENDPOINT")
+        or file_values.get("PROGRAMME_DIALOG_MODEL_ENDPOINT")
+        or os.getenv("PROGRAMME_REMOTE_VLM_ENDPOINT")
+        or file_values.get("PROGRAMME_REMOTE_VLM_ENDPOINT")
+        or os.getenv("DASHSCOPE_BASE_URL")
+        or file_values.get("DASHSCOPE_BASE_URL")
+        or os.getenv("OPENAI_BASE_URL")
+        or file_values.get("OPENAI_BASE_URL")
+    )
+    env_model = str(
+        os.getenv("PROGRAMME_DIALOG_MODEL_NAME")
+        or file_values.get("PROGRAMME_DIALOG_MODEL_NAME")
+        or os.getenv("PROGRAMME_REMOTE_VLM_MODEL")
+        or file_values.get("PROGRAMME_REMOTE_VLM_MODEL")
+        or os.getenv("DASHSCOPE_MODEL")
+        or file_values.get("DASHSCOPE_MODEL")
+        or os.getenv("OPENAI_MODEL")
+        or file_values.get("OPENAI_MODEL")
+        or ""
+    ).strip()
+
+    if env_api_key:
+        resolved_api_key = env_api_key
+    if env_endpoint:
+        resolved_endpoint = env_endpoint
+    if env_model:
+        resolved_model = env_model
+
+    if resolved_api_key and not resolved_endpoint:
+        resolved_endpoint = "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
+    if resolved_api_key and not resolved_model:
+        resolved_model = "qwen-vl-max-latest"
+
+    return resolved_endpoint, resolved_model, resolved_api_key
 
 
 def _safe_json_loads(raw_text: str) -> dict[str, Any]:
@@ -156,12 +269,112 @@ def _pose_to_dict(pose: Any) -> dict[str, Any]:
     }
 
 
+def _coerce_int_list(value: Any, *, expected_len: Optional[int] = None) -> list[int]:
+    if not isinstance(value, (list, tuple)):
+        return []
+    try:
+        items = [int(round(float(item))) for item in value]
+    except (TypeError, ValueError):
+        return []
+    if expected_len is not None and len(items) != expected_len:
+        return []
+    return items
+
+
+def _bbox_center_point_xyxy(bbox_xyxy: Any) -> list[int]:
+    bbox = _coerce_int_list(bbox_xyxy, expected_len=4)
+    if len(bbox) != 4:
+        return []
+    return [
+        int(round((float(bbox[0]) + float(bbox[2])) * 0.5)),
+        int(round((float(bbox[1]) + float(bbox[3])) * 0.5)),
+    ]
+
+
+def _target_instance_hint_dict(
+    *,
+    track_id: Any = 0,
+    bbox_xyxy: Any = None,
+    point_px: Any = None,
+    source: Any = "",
+) -> Optional[dict[str, Any]]:
+    try:
+        resolved_track_id = int(track_id or 0)
+    except (TypeError, ValueError):
+        resolved_track_id = 0
+    if resolved_track_id < 0:
+        resolved_track_id = 0
+    bbox = _coerce_int_list(bbox_xyxy, expected_len=4)
+    point = _coerce_int_list(point_px, expected_len=2)
+    if not point and bbox:
+        point = _bbox_center_point_xyxy(bbox)
+    resolved_source = str(source or "").strip()
+    if resolved_track_id <= 0 and not bbox and not point:
+        return None
+    payload: dict[str, Any] = {}
+    if resolved_track_id > 0:
+        payload["track_id"] = resolved_track_id
+    if bbox:
+        payload["bbox_xyxy"] = bbox
+    if point:
+        payload["point_px"] = point
+    if resolved_source:
+        payload["source"] = resolved_source
+    return payload or None
+
+
+def _target_instance_from_payload(payload: Any) -> Optional[dict[str, Any]]:
+    if not isinstance(payload, dict):
+        return None
+    nested = payload.get("target_instance")
+    if isinstance(nested, dict):
+        return _target_instance_hint_dict(
+            track_id=nested.get("track_id", payload.get("target_instance_track_id", 0)),
+            bbox_xyxy=nested.get(
+                "bbox_xyxy", payload.get("target_instance_bbox_xyxy", [])
+            ),
+            point_px=nested.get(
+                "point_px", payload.get("target_instance_point_px", [])
+            ),
+            source=nested.get(
+                "source", payload.get("target_instance_source", "")
+            ),
+        )
+    return _target_instance_hint_dict(
+        track_id=payload.get("target_instance_track_id", 0),
+        bbox_xyxy=payload.get("target_instance_bbox_xyxy", []),
+        point_px=payload.get("target_instance_point_px", []),
+        source=payload.get("target_instance_source", ""),
+    )
+
+
+def _target_instance_from_candidate(
+    candidate: Any,
+    *,
+    source: str = "",
+) -> Optional[dict[str, Any]]:
+    if not isinstance(candidate, dict):
+        return None
+    return _target_instance_hint_dict(
+        track_id=candidate.get("track_id", 0),
+        bbox_xyxy=candidate.get("bbox_xyxy", []),
+        point_px=candidate.get("point_px", []),
+        source=source or candidate.get("source", ""),
+    )
+
+
 def _semantic_task_to_dict(msg: SemanticTask) -> dict[str, Any]:
     constraints = [str(item) for item in msg.constraints]
     return {
         "task": str(msg.task or "pick"),
         "target_label": str(msg.target_label or ""),
         "target_hint": str(msg.target_hint or ""),
+        "target_instance": _target_instance_hint_dict(
+            track_id=getattr(msg, "target_instance_track_id", 0),
+            bbox_xyxy=list(getattr(msg, "target_instance_bbox_xyxy", []) or []),
+            point_px=list(getattr(msg, "target_instance_point_px", []) or []),
+            source=str(getattr(msg, "target_instance_source", "") or ""),
+        ),
         "constraints": constraints,
         "gripper": constraints[0] if constraints else "",
         "excluded_labels": [str(item) for item in msg.excluded_labels],
@@ -185,6 +398,7 @@ def _semantic_payload_defaults(semantic: dict[str, Any]) -> dict[str, Any]:
         "task": str(semantic.get("task", "pick") or "pick"),
         "target_label": str(semantic.get("target_label", "") or ""),
         "target_hint": str(semantic.get("target_hint", "") or ""),
+        "target_instance": _target_instance_from_payload(semantic),
         "constraints": constraints,
         "excluded_labels": [
             str(item).strip()
@@ -197,9 +411,110 @@ def _semantic_payload_defaults(semantic: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _task_goal_to_dict(msg: TaskGoal) -> dict[str, Any]:
+    return {
+        "schema_version": str(getattr(msg, "schema_version", "") or ""),
+        "goal_id": str(msg.goal_id or ""),
+        "parent_goal_id": str(getattr(msg, "parent_goal_id", "") or ""),
+        "step_id": str(getattr(msg, "step_id", "") or ""),
+        "step_index": int(getattr(msg, "step_index", 0) or 0),
+        "goal_type": str(msg.goal_type or ""),
+        "task": str(msg.task or "pick"),
+        "target_label": str(msg.target_label or ""),
+        "target_hint": str(msg.target_hint or ""),
+        "target_attributes": [str(item) for item in getattr(msg, "target_attributes", [])],
+        "target_relations": [str(item) for item in getattr(msg, "target_relations", [])],
+        "target_instance": _target_instance_hint_dict(
+            track_id=getattr(msg, "target_instance_track_id", 0),
+            bbox_xyxy=list(getattr(msg, "target_instance_bbox_xyxy", []) or []),
+            point_px=list(getattr(msg, "target_instance_point_px", []) or []),
+            source=str(getattr(msg, "target_instance_source", "") or ""),
+        ),
+        "target_part_query": str(getattr(msg, "target_part_query", "") or ""),
+        "preferred_part_tags": [str(item) for item in getattr(msg, "preferred_part_tags", [])],
+        "forbidden_part_tags": [str(item) for item in getattr(msg, "forbidden_part_tags", [])],
+        "grasp_region": str(msg.grasp_region or ""),
+        "preferred_grasp_family": str(getattr(msg, "preferred_grasp_family", "") or ""),
+        "placement_label": str(msg.placement_label or ""),
+        "preferred_approach_dirs": [
+            str(item) for item in getattr(msg, "preferred_approach_dirs", [])
+        ],
+        "forbidden_approach_dirs": [
+            str(item) for item in getattr(msg, "forbidden_approach_dirs", [])
+        ],
+        "transport_constraints": [str(item) for item in msg.transport_constraints],
+        "execution_constraints": [str(item) for item in msg.execution_constraints],
+        "excluded_labels": [str(item) for item in msg.excluded_labels],
+        "reserved_next_skills": [str(item) for item in getattr(msg, "reserved_next_skills", [])],
+        "confidence": float(msg.confidence),
+        "min_affordance_score": float(getattr(msg, "min_affordance_score", 0.0) or 0.0),
+        "min_grasp_quality": float(getattr(msg, "min_grasp_quality", 0.0) or 0.0),
+        "max_forbidden_overlap": float(getattr(msg, "max_forbidden_overlap", 0.0) or 0.0),
+        "max_target_staleness_sec": float(
+            getattr(msg, "max_target_staleness_sec", 0.0) or 0.0
+        ),
+        "need_human_confirm": bool(msg.need_human_confirm),
+        "start_search_sweep": bool(msg.start_search_sweep),
+        "allow_instance_grounding": bool(msg.allow_instance_grounding),
+        "require_target_lock": bool(msg.require_target_lock),
+        "allow_replan": bool(msg.allow_replan),
+        "allow_rescan": bool(msg.allow_rescan),
+        "strict_part_match": bool(getattr(msg, "strict_part_match", False)),
+        "strict_approach_match": bool(getattr(msg, "strict_approach_match", False)),
+        "max_retries": int(msg.max_retries),
+        "planning_timeout_sec": float(msg.planning_timeout_sec),
+        "execution_timeout_sec": float(msg.execution_timeout_sec),
+        "success_criteria": str(msg.success_criteria or ""),
+        "failure_policy": str(msg.failure_policy or ""),
+        "verify_policy": str(getattr(msg, "verify_policy", "") or ""),
+        "recovery_policy": str(getattr(msg, "recovery_policy", "") or ""),
+        "handoff_context_json": str(getattr(msg, "handoff_context_json", "") or ""),
+        "reason": str(msg.reason or ""),
+        "prompt_text": str(msg.prompt_text or ""),
+        "raw_json": str(msg.raw_json or ""),
+        "updated_at": _now_sec(),
+        "stamp_sec": _msg_stamp_sec(msg),
+    }
+
+
+def _task_execution_status_to_dict(msg: TaskExecutionStatus) -> dict[str, Any]:
+    return {
+        "goal_id": str(msg.goal_id or ""),
+        "parent_goal_id": str(getattr(msg, "parent_goal_id", "") or ""),
+        "step_id": str(getattr(msg, "step_id", "") or ""),
+        "phase": str(msg.phase or "idle"),
+        "current_skill": str(msg.current_skill or ""),
+        "skill_status_code": str(getattr(msg, "skill_status_code", "") or ""),
+        "message": str(msg.message or ""),
+        "error_code": str(msg.error_code or ""),
+        "target_label": str(msg.target_label or ""),
+        "target_hint": str(msg.target_hint or ""),
+        "target_part_query": str(getattr(msg, "target_part_query", "") or ""),
+        "grasp_region": str(msg.grasp_region or ""),
+        "active": bool(msg.active),
+        "success": bool(msg.success),
+        "requires_confirmation": bool(msg.requires_confirmation),
+        "target_locked": bool(msg.target_locked),
+        "target_candidate_visible": bool(msg.target_candidate_visible),
+        "pick_active": bool(msg.pick_active),
+        "retry_count": int(msg.retry_count),
+        "max_retries": int(msg.max_retries),
+        "grounded_track_id": int(msg.grounded_track_id),
+        "selected_candidate_id": int(getattr(msg, "selected_candidate_id", 0) or 0),
+        "progress": float(msg.progress),
+        "grounding_confidence": float(getattr(msg, "grounding_confidence", 0.0) or 0.0),
+        "best_grasp_quality": float(getattr(msg, "best_grasp_quality", 0.0) or 0.0),
+        "best_affordance_score": float(getattr(msg, "best_affordance_score", 0.0) or 0.0),
+        "verification_score": float(getattr(msg, "verification_score", 0.0) or 0.0),
+        "recommended_recovery": str(getattr(msg, "recommended_recovery", "") or ""),
+        "updated_at": _now_sec(),
+        "stamp_sec": _msg_stamp_sec(msg),
+    }
+
+
 def _debug_candidates_from_payload(detection_debug: dict[str, Any]) -> list[dict[str, Any]]:
     empty_candidates: list[dict[str, Any]] = []
-    for key in ("debug_candidates", "top_candidates"):
+    for key in ("display_candidates", "debug_candidates", "top_candidates"):
         items = detection_debug.get(key)
         if not isinstance(items, list):
             continue
@@ -789,6 +1104,60 @@ def _normalize_dialog_reply_language(value: Any) -> str:
     return "en" if str(value or "").strip().lower() == "en" else "zh"
 
 
+def _dialog_coerce_text_value(value: Any) -> str:
+    if isinstance(value, (list, tuple, set)):
+        for item in value:
+            text = _dialog_coerce_text_value(item)
+            if text:
+                return text
+        return ""
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    if text.startswith("[") and text.endswith("]"):
+        try:
+            parsed = ast.literal_eval(text)
+        except Exception:
+            parsed = None
+        if parsed is not None and parsed is not value:
+            coerced = _dialog_coerce_text_value(parsed)
+            if coerced:
+                return coerced
+    return text
+
+
+def _dialog_coerce_text_list(value: Any) -> list[str]:
+    items: list[Any]
+    if isinstance(value, (list, tuple, set)):
+        items = list(value)
+    else:
+        text = str(value or "").strip()
+        if not text:
+            return []
+        parsed = None
+        if text.startswith("[") and text.endswith("]"):
+            try:
+                parsed = ast.literal_eval(text)
+            except Exception:
+                parsed = None
+        if isinstance(parsed, (list, tuple, set)):
+            items = list(parsed)
+        else:
+            items = [value]
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for item in items:
+        text = _dialog_coerce_text_value(item)
+        if not text:
+            continue
+        key = text.strip().lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        normalized.append(text)
+    return normalized
+
+
 def _dialog_reply_text(reply_language: str, zh_text: str, en_text: str) -> str:
     return str(en_text if _normalize_dialog_reply_language(reply_language) == "en" else zh_text)
 
@@ -1046,6 +1415,7 @@ class TactileWebGateway(Node):
         self.declare_parameter("host", "127.0.0.1")
         self.declare_parameter("port", 8765)
         self.declare_parameter("frontend_dist_dir", "")
+        self.declare_parameter("live_state_period_sec", 0.15)
         self.declare_parameter("prompt_topic", "/qwen/user_prompt")
         self.declare_parameter("semantic_task_topic", "/qwen/semantic_task")
         self.declare_parameter("semantic_result_topic", "/qwen/semantic_result")
@@ -1066,10 +1436,14 @@ class TactileWebGateway(Node):
         self.declare_parameter("tactile_topic", "/tactile/raw")
         self.declare_parameter("health_topic", "/system/health")
         self.declare_parameter("arm_state_topic", "/arm/state")
+        self.declare_parameter("execute_task_action", "/task/execute_task")
+        self.declare_parameter("task_goal_topic", "/task/goal")
+        self.declare_parameter("task_execution_status_topic", "/task/execution_status")
         self.declare_parameter("execute_pick_service", "/task/execute_pick")
         self.declare_parameter("reset_pick_session_service", "/task/reset_pick_session")
         self.declare_parameter("return_home_service", "/task/return_home")
         self.declare_parameter("start_search_sweep_service", "/task/start_search_sweep")
+        self.declare_parameter("stop_search_sweep_service", "/task/stop_search_sweep")
         self.declare_parameter("control_arm_enable_service", "/control/arm/enable")
         self.declare_parameter("control_arm_move_joints_service", "/control/arm/move_joints")
         self.declare_parameter("scene_reset_service", "/sim/world/reset")
@@ -1087,10 +1461,14 @@ class TactileWebGateway(Node):
         self.declare_parameter("debug_open_rviz", True)
         self.declare_parameter("debug_open_views_script", "")
         self.declare_parameter("return_home_joint_ids", [1, 2, 3, 4, 5, 6])
-        self.declare_parameter("return_home_joint_angles_deg", [3.0, -62.0, 102.0, 82.0, 0.0, -68.754936])
+        self.declare_parameter(
+            "return_home_joint_angles_deg",
+            [3.0, -58.0, 89.405064, 96.0, 0.0, -68.754936],
+        )
         self.declare_parameter("return_home_duration_ms", 3500)
-        self.declare_parameter("return_home_wait_for_completion", False)
-        self.declare_parameter("startup_prepare_home", True)
+        self.declare_parameter("return_home_wait_for_completion", True)
+        # Startup-home ownership belongs to the motion/search layer, not the web gateway.
+        self.declare_parameter("startup_prepare_home", False)
         self.declare_parameter("startup_prepare_home_delay_sec", 6.0)
         self.declare_parameter("event_log_capacity", 240)
         self.declare_parameter("feedback_event_capacity", 48)
@@ -1104,7 +1482,9 @@ class TactileWebGateway(Node):
         self.declare_parameter("dialog_history_turns", 8)
         self.declare_parameter("dialog_auto_execute_confidence_threshold", 0.55)
         self.declare_parameter("dialog_use_visual_context", True)
-        self.declare_parameter("dialog_visual_input_mode", "annotated")
+        # Production default: let the dialog VLM see raw RGB and use detector output
+        # only through structured context, not baked into the image.
+        self.declare_parameter("dialog_visual_input_mode", "raw")
         self.declare_parameter("dialog_visual_max_side_px", 896)
         self.declare_parameter("dialog_visual_jpeg_quality", 85)
         self.declare_parameter("dialog_visual_focus_timeout_sec", 20.0)
@@ -1116,6 +1496,9 @@ class TactileWebGateway(Node):
         self.host = str(self.get_parameter("host").value)
         self.port = int(self.get_parameter("port").value)
         self.frontend_dist_dir = str(self.get_parameter("frontend_dist_dir").value or "").strip()
+        self.live_state_period_sec = max(
+            0.05, float(self.get_parameter("live_state_period_sec").value)
+        )
         self.prompt_topic = str(self.get_parameter("prompt_topic").value)
         self.semantic_task_topic = str(self.get_parameter("semantic_task_topic").value)
         self.semantic_result_topic = str(self.get_parameter("semantic_result_topic").value)
@@ -1138,6 +1521,11 @@ class TactileWebGateway(Node):
         self.tactile_topic = str(self.get_parameter("tactile_topic").value)
         self.health_topic = str(self.get_parameter("health_topic").value)
         self.arm_state_topic = str(self.get_parameter("arm_state_topic").value)
+        self.execute_task_action = str(self.get_parameter("execute_task_action").value)
+        self.task_goal_topic = str(self.get_parameter("task_goal_topic").value)
+        self.task_execution_status_topic = str(
+            self.get_parameter("task_execution_status_topic").value
+        )
         self.execute_pick_service = str(self.get_parameter("execute_pick_service").value)
         self.reset_pick_session_service = str(
             self.get_parameter("reset_pick_session_service").value
@@ -1145,6 +1533,9 @@ class TactileWebGateway(Node):
         self.return_home_service = str(self.get_parameter("return_home_service").value)
         self.start_search_sweep_service = str(
             self.get_parameter("start_search_sweep_service").value
+        )
+        self.stop_search_sweep_service = str(
+            self.get_parameter("stop_search_sweep_service").value
         )
         self.control_arm_enable_service = str(
             self.get_parameter("control_arm_enable_service").value
@@ -1216,9 +1607,15 @@ class TactileWebGateway(Node):
             100,
             max(70, int(self.get_parameter("stream_jpeg_quality").value)),
         )
-        self.dialog_model_endpoint = str(self.get_parameter("dialog_model_endpoint").value)
-        self.dialog_model_name = str(self.get_parameter("dialog_model_name").value)
-        self.dialog_api_key = str(self.get_parameter("dialog_api_key").value or "")
+        (
+            self.dialog_model_endpoint,
+            self.dialog_model_name,
+            self.dialog_api_key,
+        ) = _resolve_dialog_runtime_config(
+            endpoint=self.get_parameter("dialog_model_endpoint").value,
+            model_name=self.get_parameter("dialog_model_name").value,
+            api_key=self.get_parameter("dialog_api_key").value,
+        )
         self.dialog_request_timeout_sec = max(
             1.0, float(self.get_parameter("dialog_request_timeout_sec").value)
         )
@@ -1237,10 +1634,10 @@ class TactileWebGateway(Node):
             self.get_parameter("dialog_use_visual_context").value
         )
         self.dialog_visual_input_mode = str(
-            self.get_parameter("dialog_visual_input_mode").value or "annotated"
+            self.get_parameter("dialog_visual_input_mode").value or "raw"
         ).strip().lower()
         if self.dialog_visual_input_mode not in {"off", "raw", "annotated", "both"}:
-            self.dialog_visual_input_mode = "annotated"
+            self.dialog_visual_input_mode = "raw"
         self.dialog_visual_max_side_px = max(
             256, int(self.get_parameter("dialog_visual_max_side_px").value)
         )
@@ -1276,16 +1673,26 @@ class TactileWebGateway(Node):
             depth=10,
             reliability=ReliabilityPolicy.RELIABLE,
         )
+        qos_latched = QoSProfile(
+            history=HistoryPolicy.KEEP_LAST,
+            depth=1,
+            reliability=ReliabilityPolicy.RELIABLE,
+            durability=DurabilityPolicy.TRANSIENT_LOCAL,
+        )
 
         self.prompt_pub = self.create_publisher(String, self.prompt_topic, qos_reliable)
         self.semantic_override_pub = self.create_publisher(
-            SemanticTask, self.semantic_task_topic, qos_reliable
+            SemanticTask, self.semantic_task_topic, qos_latched
         )
+        self.execute_task_client = ActionClient(self, ExecuteTask, self.execute_task_action)
         self.execute_pick_client = self.create_client(Trigger, self.execute_pick_service)
         self.reset_pick_client = self.create_client(Trigger, self.reset_pick_session_service)
         self.return_home_client = self.create_client(Trigger, self.return_home_service)
         self.start_search_sweep_client = self.create_client(
             Trigger, self.start_search_sweep_service
+        )
+        self.stop_search_sweep_client = self.create_client(
+            Trigger, self.stop_search_sweep_service
         )
         self.control_arm_enable_client = self.create_client(
             SetBool, self.control_arm_enable_service
@@ -1302,6 +1709,13 @@ class TactileWebGateway(Node):
 
         self.create_subscription(String, self.semantic_result_topic, self._on_semantic_result, qos_reliable)
         self.create_subscription(SemanticTask, self.semantic_task_topic, self._on_semantic_task, qos_reliable)
+        self.create_subscription(TaskGoal, self.task_goal_topic, self._on_task_goal, qos_reliable)
+        self.create_subscription(
+            TaskExecutionStatus,
+            self.task_execution_status_topic,
+            self._on_task_execution_status,
+            qos_reliable,
+        )
         self.create_subscription(Image, self.color_topic, self._on_color_image, qos_sensor)
         self.create_subscription(
             DetectionResult, self.detection_result_topic, self._on_detection_result, qos_reliable
@@ -1333,8 +1747,19 @@ class TactileWebGateway(Node):
         self._feedback_events: deque[dict[str, Any]] = deque(maxlen=self.feedback_event_capacity)
         self._last_prompt_text = ""
         self._intervention = {"active": False, "source": "", "label": ""}
+        self._pending_execute = {"active": False, "source": "", "message": "", "updated_at": 0.0}
+        self._pending_execute_dispatching = False
+        self._execute_task_goal_handle = None
+        self._active_execute_task_goal_id = ""
+        self._ignored_task_goal_ids: set[str] = set()
         self._semantic_result: dict[str, Any] = {"raw": "", "updated_at": 0.0}
         self._semantic_task: dict[str, Any] = {"updated_at": 0.0}
+        self._task_goal: dict[str, Any] = {"updated_at": 0.0}
+        self._task_execution_status: dict[str, Any] = {
+            "phase": "idle",
+            "message": "waiting for task goal",
+            "updated_at": 0.0,
+        }
         self._detection_result: dict[str, Any] = {"updated_at": 0.0}
         self._detection_debug: dict[str, Any] = {"updated_at": 0.0}
         self._grasp_backend_debug: dict[str, Any] = {"updated_at": 0.0}
@@ -1356,6 +1781,7 @@ class TactileWebGateway(Node):
             "reset_pose": copy.deepcopy(self.scene_target_reset_pose),
             "updated_at": 0.0,
         }
+        self._dialog_endpoint_health = {"ready": False, "checked_at": 0.0}
         self._ws_root = Path(__file__).resolve().parents[3]
         self._runtime_log_dir = self._ws_root / ".runtime" / "programme-ui"
         self._runtime_log_dir.mkdir(parents=True, exist_ok=True)
@@ -1364,7 +1790,7 @@ class TactileWebGateway(Node):
         self._dialog_message_id = 0
         self._dialog = {
             "session_id": uuid4().hex,
-            "mode": "review",
+            "mode": "auto",
             "reply_language": self.dialog_default_reply_language,
             "status": "idle",
             "pending_auto_execute": False,
@@ -1398,6 +1824,7 @@ class TactileWebGateway(Node):
         )
 
         self._last_pick_status_phase = "idle"
+        self._last_task_execution_phase = "idle"
         self._last_pick_progress_key = ""
         self._last_pick_active = False
         self._last_target_locked = False
@@ -1456,6 +1883,24 @@ class TactileWebGateway(Node):
             }
             self._state_version += 1
 
+    def _set_pending_execute(
+        self,
+        active: bool,
+        *,
+        source: str = "",
+        message: str = "",
+    ) -> None:
+        with self._lock:
+            self._pending_execute = {
+                "active": bool(active),
+                "source": str(source or "") if active else "",
+                "message": str(message or "") if active else "",
+                "updated_at": _now_sec() if active else 0.0,
+            }
+            if not active:
+                self._pending_execute_dispatching = False
+            self._state_version += 1
+
     def _on_semantic_result(self, msg: String) -> None:
         parsed = _safe_json_loads(str(msg.data or ""))
         parsed["raw"] = str(msg.data or "")
@@ -1472,6 +1917,63 @@ class TactileWebGateway(Node):
         with self._lock:
             self._semantic_task = semantic
             self._state_version += 1
+
+    def _on_task_goal(self, msg: TaskGoal) -> None:
+        task_goal = _task_goal_to_dict(msg)
+        with self._lock:
+            self._task_goal = task_goal
+            self._state_version += 1
+
+    def _on_task_execution_status(self, msg: TaskExecutionStatus) -> None:
+        parsed = _task_execution_status_to_dict(msg)
+        goal_id = str(parsed.get("goal_id", "") or "").strip()
+        ignored = False
+        if goal_id:
+            with self._lock:
+                ignored = goal_id in self._ignored_task_goal_ids
+                if ignored and str(parsed.get("phase", "") or "") in {"completed", "error", "cancelled"}:
+                    self._ignored_task_goal_ids.discard(goal_id)
+        if ignored:
+            return
+        phase = str(parsed.get("phase", "idle") or "idle")
+        phase_changed = phase != self._last_task_execution_phase
+        if phase_changed:
+            self._last_task_execution_phase = phase
+            self._record_event(
+                "task",
+                "error" if phase in {"error", "cancelled"} else "info",
+                str(parsed.get("message") or phase),
+                data={
+                    "phase": phase,
+                    "current_skill": str(parsed.get("current_skill", "") or ""),
+                    "goal_id": str(parsed.get("goal_id", "") or ""),
+                },
+                feedback=phase in {"completed", "error", "cancelled"},
+            )
+        with self._lock:
+            self._task_execution_status = parsed
+            if bool(parsed.get("active", False)):
+                self._pending_execute = {
+                    "active": False,
+                    "source": "",
+                    "message": "",
+                    "updated_at": 0.0,
+                }
+                self._pending_execute_dispatching = False
+            self._state_version += 1
+        if phase_changed and phase == "completed":
+            self._append_dialog_message("system", "Task execution completed.")
+            self._set_dialog_status(status="ready", pending_auto_execute=False, last_error="")
+        elif phase_changed and phase in {"error", "cancelled"}:
+            self._append_dialog_message(
+                "system",
+                f"Task execution {phase}: {str(parsed.get('message') or phase)}",
+            )
+            self._set_dialog_status(
+                status="error",
+                pending_auto_execute=False,
+                last_error=str(parsed.get("message") or phase),
+            )
 
     def _on_color_image(self, msg: Image) -> None:
         self.rgb_encoder.submit(msg)
@@ -1506,6 +2008,7 @@ class TactileWebGateway(Node):
             self._target_locked = locked
             self._state_version += 1
         self._maybe_run_pending_auto_execute(locked)
+        self._maybe_run_pending_manual_execute(locked)
 
     def _on_pick_active(self, msg: Bool) -> None:
         active = bool(msg.data)
@@ -1519,6 +2022,14 @@ class TactileWebGateway(Node):
             )
         with self._lock:
             self._pick_active = active
+            if active:
+                self._pending_execute = {
+                    "active": False,
+                    "source": "",
+                    "message": "",
+                    "updated_at": 0.0,
+                }
+                self._pending_execute_dispatching = False
             self._state_version += 1
 
     def _on_pick_status(self, msg: String) -> None:
@@ -1564,11 +2075,23 @@ class TactileWebGateway(Node):
             self._last_pick_progress_key = progress_key
         with self._lock:
             self._pick_status = parsed
+            task_phase = str(self._task_execution_status.get("phase", "") or "").strip()
             self._state_version += 1
-        if phase_changed and phase == "completed":
+        high_level_owned = task_phase in {
+            "accepted",
+            "grounding",
+            "awaiting_lock",
+            "planning",
+            "executing",
+            "recovering",
+            "completed",
+            "error",
+            "cancelled",
+        }
+        if phase_changed and phase == "completed" and not high_level_owned:
             self._append_dialog_message("system", "Execution completed.")
             self._set_dialog_status(status="ready", pending_auto_execute=False, last_error="")
-        elif phase_changed and phase == "error":
+        elif phase_changed and phase == "error" and not high_level_owned:
             self._append_dialog_message(
                 "system",
                 f"Execution error: {str(parsed.get('message') or 'unknown error')}",
@@ -1650,12 +2173,7 @@ class TactileWebGateway(Node):
 
     def _on_scene_pose_info(self, msg: TFMessage) -> None:
         target_name = self.scene_target_model_name
-        pose_info: dict[str, Any] = {
-            "model_name": target_name,
-            "found": False,
-            "reset_pose": copy.deepcopy(self.scene_target_reset_pose),
-            "updated_at": _now_sec(),
-        }
+        pose_info: Optional[dict[str, Any]] = None
         for transform in list(msg.transforms):
             child_frame_id = str(getattr(transform, "child_frame_id", "") or "")
             if target_name not in child_frame_id:
@@ -1682,6 +2200,8 @@ class TactileWebGateway(Node):
                 "updated_at": _now_sec(),
             }
             break
+        if pose_info is None:
+            return
         with self._lock:
             self._scene_target_pose = pose_info
             self._state_version += 1
@@ -2046,6 +2566,21 @@ class TactileWebGateway(Node):
             bbox_xyxy = list(existing_focus.get("bbox_xyxy", []) or [])
         if not bbox_xyxy and isinstance(detection.get("bbox"), dict):
             bbox_xyxy = list(detection["bbox"].get("xyxy", []) or [])
+        point_px = _coerce_int_list((matched_candidate or {}).get("point_px", []), expected_len=2)
+        if not point_px and isinstance(existing_focus, dict):
+            point_px = _coerce_int_list(existing_focus.get("point_px", []), expected_len=2)
+        if not point_px and bbox_xyxy:
+            point_px = _bbox_center_point_xyxy(bbox_xyxy)
+        focus_track_id = 0
+        try:
+            focus_track_id = int((matched_candidate or {}).get("track_id", 0) or 0)
+        except (TypeError, ValueError):
+            focus_track_id = 0
+        if focus_track_id <= 0 and isinstance(existing_focus, dict):
+            try:
+                focus_track_id = int(existing_focus.get("track_id", 0) or 0)
+            except (TypeError, ValueError):
+                focus_track_id = 0
 
         focus_confidence = float(normalized.get("confidence", 0.0) or 0.0)
         if matched_candidate is not None:
@@ -2082,6 +2617,7 @@ class TactileWebGateway(Node):
         ).strip()
         return {
             "index": int((matched_candidate or {}).get("index", -1)),
+            "track_id": focus_track_id,
             "label": focus_label,
             "canonical_label": focus_canonical or focus_label,
             "display_label": focus_display or focus_label,
@@ -2089,6 +2625,7 @@ class TactileWebGateway(Node):
             "target_hint": resolved_target_hint,
             "confidence": focus_confidence,
             "bbox_xyxy": bbox_xyxy,
+            "point_px": point_px,
             "side": focus_side,
             "requested_action": requested_action,
             "source": "dialog_visual_grounding",
@@ -2097,7 +2634,7 @@ class TactileWebGateway(Node):
 
     def _reset_dialog_session(self) -> None:
         with self._lock:
-            current_mode = str(self._dialog.get("mode", "review") or "review")
+            current_mode = str(self._dialog.get("mode", "auto") or "auto")
             current_reply_language = _normalize_dialog_reply_language(
                 self._dialog.get("reply_language", self.dialog_default_reply_language)
             )
@@ -2118,11 +2655,13 @@ class TactileWebGateway(Node):
         with self._lock:
             dialog = copy.deepcopy(self._dialog)
             semantic = copy.deepcopy(self._semantic_task)
+            task_status = copy.deepcopy(self._task_execution_status)
             detection = copy.deepcopy(self._detection_result)
             detection_debug = copy.deepcopy(self._detection_debug)
             execution = {
                 "phase": self._derive_phase(
                     semantic=self._semantic_task,
+                    task_status=self._task_execution_status,
                     detection=self._detection_result,
                     detection_debug=self._detection_debug,
                     target_locked=bool(self._target_locked),
@@ -2131,6 +2670,7 @@ class TactileWebGateway(Node):
                 ),
                 "target_locked": bool(self._target_locked),
                 "pick_active": bool(self._pick_active),
+                "task_status": task_status,
                 "pick_status": copy.deepcopy(self._pick_status),
             }
         image_width = int(detection.get("image_width", 0) or detection_debug.get("image_width", 0) or 0)
@@ -2225,6 +2765,7 @@ class TactileWebGateway(Node):
         reply_language: str,
     ) -> dict[str, Any]:
         semantic_defaults = _semantic_payload_defaults(snapshot.get("semantic", {}))
+        default_target_instance = _target_instance_from_payload(semantic_defaults)
         visual_focus = snapshot.get("visual_focus")
         if not self._dialog_visual_focus_is_fresh(visual_focus):
             visual_focus = None
@@ -2370,9 +2911,15 @@ class TactileWebGateway(Node):
             "You are the multi-turn dialog controller for a robot manipulation UI with visual context. "
             "Return exactly one JSON object with no markdown. "
             "Required keys: assistant_text, requested_action, task, target_label, target_hint, "
-            "constraints, excluded_labels, confidence, need_human_confirm, reason. "
+            "constraints, excluded_labels, confidence, need_human_confirm, reason, detection_spec. "
             "requested_action must be one of update_task, execute, clarify, cancel, answer. "
             "constraints and excluded_labels must always be JSON arrays. Use [] when empty. "
+            "detection_spec must always be a JSON object. "
+            "When requested_action is update_task or execute, detection_spec must include: "
+            "primary_label, prompt_classes, negative_labels, attributes. "
+            "prompt_classes must be 1 to 5 short English detector phrases optimized for open-vocabulary detection. "
+            "negative_labels and attributes must be JSON arrays. Use [] when empty. "
+            "When requested_action is answer or cancel, detection_spec may be {}. "
             "confidence must always be a numeric value from 0.0 to 1.0, never a word. "
             "Keep continuity with the current task unless the user explicitly changes it. "
             "Use the provided image(s), top_candidates, and visual_focus to answer visual questions. "
@@ -2456,6 +3003,7 @@ class TactileWebGateway(Node):
         reply_language: str,
     ) -> dict[str, Any]:
         semantic_defaults = _semantic_payload_defaults(snapshot.get("semantic", {}))
+        default_target_instance = _target_instance_from_payload(semantic_defaults)
         visual_focus = snapshot.get("visual_focus")
         if not self._dialog_visual_focus_is_fresh(visual_focus):
             visual_focus = None
@@ -2471,11 +3019,9 @@ class TactileWebGateway(Node):
                 gripper,
                 *[item for item in normalized_constraints if item != gripper],
             ]
-        excluded_labels = response.get(
-            "excluded_labels", semantic_defaults["excluded_labels"]
-        )
-        if not isinstance(excluded_labels, list):
-            excluded_labels = semantic_defaults["excluded_labels"]
+        excluded_labels = _dialog_coerce_text_list(
+            response.get("excluded_labels", semantic_defaults["excluded_labels"])
+        ) or _dialog_coerce_text_list(semantic_defaults["excluded_labels"])
         requested_action = str(
             response.get("requested_action")
             or response.get("action")
@@ -2528,12 +3074,12 @@ class TactileWebGateway(Node):
             requested_action = "execute"
 
         deictic_reference = _dialog_mentions_deictic_reference(user_text)
-        response_target_label = str(
+        response_target_label = _dialog_coerce_text_value(
             response.get("target_label")
             or response.get("target")
             or ""
         ).strip()
-        response_target_hint = str(response.get("target_hint") or "").strip()
+        response_target_hint = _dialog_coerce_text_value(response.get("target_hint") or "").strip()
         focus_canonical_label = ""
         if isinstance(visual_focus, dict):
             focus_canonical_label = str(
@@ -2597,6 +3143,31 @@ class TactileWebGateway(Node):
                 selected_label = _dialog_candidate_primary_label(selected_candidate)
                 if not target_label or _dialog_labels_related(target_label, selected_label):
                     execution_candidate = copy.deepcopy(selected_candidate)
+        target_instance = None
+        if requested_action in {"update_task", "execute"}:
+            target_instance = _target_instance_from_candidate(
+                execution_candidate,
+                source="dialog_execution_candidate",
+            )
+            if target_instance is None:
+                target_instance = _target_instance_from_candidate(
+                    visual_focus,
+                    source="dialog_visual_focus",
+                )
+            if target_instance is None:
+                preserve_existing_target = (
+                    (not target_label and not target_hint)
+                    or _dialog_labels_related(
+                        target_label,
+                        str(semantic_defaults.get("target_label", "") or ""),
+                    )
+                    or _dialog_labels_related(
+                        target_hint,
+                        str(semantic_defaults.get("target_hint", "") or ""),
+                    )
+                )
+                if preserve_existing_target:
+                    target_instance = default_target_instance
 
         confidence_raw = response.get("confidence", semantic_defaults["confidence"])
         try:
@@ -2759,16 +3330,32 @@ class TactileWebGateway(Node):
                 )
             except Exception as exc:  # noqa: BLE001
                 self.get_logger().warn(f"dialog assistant text rewrite failed: {exc}")
+        sanitized_excluded_labels: list[str] = []
+        excluded_seen: set[str] = set()
+        for item in excluded_labels:
+            label_text = _dialog_coerce_text_value(item).strip()
+            if not label_text:
+                continue
+            if (
+                (target_label and _dialog_labels_related(label_text, target_label))
+                or (target_hint and _dialog_labels_related(label_text, target_hint))
+            ):
+                continue
+            key = label_text.lower()
+            if key in excluded_seen:
+                continue
+            excluded_seen.add(key)
+            sanitized_excluded_labels.append(label_text)
         return {
             "assistant_text": assistant_text,
             "requested_action": requested_action,
             "task": str(response.get("task") or semantic_defaults["task"] or self.default_task),
             "target_label": target_label,
             "target_hint": target_hint,
+            "target_instance": target_instance,
             "constraints": normalized_constraints or list(self.default_constraints),
-            "excluded_labels": [
-                str(item).strip() for item in excluded_labels if str(item).strip()
-            ],
+            "excluded_labels": sanitized_excluded_labels,
+            "detection_spec": response.get("detection_spec", {}),
             "confidence": confidence,
             "need_human_confirm": need_human_confirm,
             "reason": reason or f"dialog turn interpreted from: {str(user_text or '').strip()}",
@@ -2790,19 +3377,43 @@ class TactileWebGateway(Node):
         gripper = str(payload.get("gripper", "") or "").strip()
         if gripper and gripper not in constraints:
             constraints = [gripper, *constraints]
+        target_instance = _target_instance_from_payload(payload)
+        sanitized_target_label = _dialog_coerce_text_value(payload.get("target_label", "")).strip()
+        sanitized_target_hint = _dialog_coerce_text_value(
+            payload.get("target_hint", sanitized_target_label) or sanitized_target_label
+        ).strip()
+        sanitized_excluded_labels: list[str] = []
+        excluded_seen: set[str] = set()
+        for item in _dialog_coerce_text_list(payload.get("excluded_labels", [])):
+            if (
+                (sanitized_target_label and _dialog_labels_related(item, sanitized_target_label))
+                or (sanitized_target_hint and _dialog_labels_related(item, sanitized_target_hint))
+            ):
+                continue
+            key = item.lower()
+            if key in excluded_seen:
+                continue
+            excluded_seen.add(key)
+            sanitized_excluded_labels.append(item)
         task_msg = SemanticTask()
         task_msg.header.stamp = self.get_clock().now().to_msg()
         task_msg.task = str(payload.get("task", "pick") or "pick")
-        task_msg.target_label = str(payload.get("target_label", "") or "").strip()
-        task_msg.target_hint = str(
-            payload.get("target_hint", task_msg.target_label) or task_msg.target_label
-        ).strip()
+        task_msg.target_label = sanitized_target_label
+        task_msg.target_hint = sanitized_target_hint or task_msg.target_label
+        task_msg.target_instance_track_id = int(
+            (target_instance or {}).get("track_id", 0) or 0
+        )
+        task_msg.target_instance_bbox_xyxy = list(
+            (target_instance or {}).get("bbox_xyxy", []) or []
+        )
+        task_msg.target_instance_point_px = list(
+            (target_instance or {}).get("point_px", []) or []
+        )
+        task_msg.target_instance_source = str(
+            (target_instance or {}).get("source", "") or ""
+        )
         task_msg.constraints = constraints
-        task_msg.excluded_labels = [
-            str(item).strip()
-            for item in payload.get("excluded_labels", [])
-            if str(item).strip()
-        ]
+        task_msg.excluded_labels = sanitized_excluded_labels
         task_msg.confidence = float(payload.get("confidence", 1.0) or 1.0)
         task_msg.need_human_confirm = bool(payload.get("need_human_confirm", False))
         task_msg.reason = str(payload.get("reason", "") or "")
@@ -2828,6 +3439,33 @@ class TactileWebGateway(Node):
             self._set_intervention(False)
         return semantic
 
+    def _clear_semantic_context(
+        self,
+        *,
+        reason: str,
+        clear_dialog_focus: bool = True,
+        clear_prompt_text: bool = True,
+        publish_empty_task: bool = True,
+    ) -> None:
+        if publish_empty_task:
+            clear_msg = SemanticTask()
+            clear_msg.header.stamp = self.get_clock().now().to_msg()
+            clear_msg.task = self.default_task
+            clear_msg.reason = str(reason or "semantic context cleared")
+            self.semantic_override_pub.publish(clear_msg)
+
+        updated_at = _now_sec()
+        with self._lock:
+            self._semantic_task = {"updated_at": updated_at}
+            self._semantic_result = {"raw": "", "updated_at": updated_at}
+            self._task_goal = {"updated_at": 0.0}
+            if clear_dialog_focus:
+                self._dialog["visual_focus"] = None
+                self._dialog["pending_auto_execute"] = False
+            if clear_prompt_text:
+                self._last_prompt_text = ""
+            self._state_version += 1
+
     def set_dialog_mode(self, mode: str) -> dict[str, Any]:
         normalized = "auto" if str(mode).lower() == "auto" else "review"
         self._set_dialog_status(mode=normalized, status="idle", pending_auto_execute=False, last_error="")
@@ -2846,6 +3484,7 @@ class TactileWebGateway(Node):
 
     def reset_dialog_session(self) -> dict[str, Any]:
         self._reset_dialog_session()
+        self._set_pending_execute(False)
         return self.build_state()
 
     def dialog_send_message(self, payload: dict[str, Any]) -> dict[str, Any]:
@@ -2858,7 +3497,7 @@ class TactileWebGateway(Node):
         )
         if requested_mode not in {"review", "auto"}:
             with self._lock:
-                requested_mode = str(self._dialog.get("mode", "review") or "review")
+                requested_mode = str(self._dialog.get("mode", "auto") or "auto")
         with self._lock:
             current_reply_language = _normalize_dialog_reply_language(
                 self._dialog.get("reply_language", self.dialog_default_reply_language)
@@ -2911,6 +3550,7 @@ class TactileWebGateway(Node):
             raise
 
         requested_action = str(normalized["requested_action"])
+        explicit_execute_intent = _dialog_mentions_execute_intent(user_text) and not _dialog_mentions_answer_query(user_text)
         visual_focus = self._resolve_dialog_visual_focus(
             snapshot=snapshot,
             normalized=normalized,
@@ -2938,6 +3578,58 @@ class TactileWebGateway(Node):
                 f"我已经把任务更新为抓取{normalized['target_hint']}。",
                 f"I updated the task to pick the {normalized['target_hint']}.",
             )
+        if (
+            requested_action == "answer"
+            and _dialog_mentions_execute_intent(user_text)
+            and not _dialog_mentions_answer_query(user_text)
+            and isinstance(visual_focus, dict)
+        ):
+            requested_action = "execute"
+            normalized["requested_action"] = requested_action
+            normalized["target_label"] = str(
+                visual_focus.get("canonical_label", "")
+                or visual_focus.get("label", "")
+                or normalized.get("target_label", "")
+            ).strip()
+            normalized["target_hint"] = _dialog_focus_target_hint(visual_focus) or str(
+                normalized.get("target_hint", "") or normalized.get("target_label", "")
+            ).strip()
+            normalized["need_human_confirm"] = False
+            if not _dialog_assistant_text_mentions_execution(
+                str(normalized.get("assistant_text", "") or "")
+            ):
+                normalized["assistant_text"] = _dialog_reply_text(
+                    requested_reply_language,
+                    f"我已经把任务更新为抓取{normalized['target_hint']}。",
+                    f"I updated the task to pick the {normalized['target_hint']}.",
+                )
+        if requested_mode == "auto" and explicit_execute_intent and requested_action != "cancel":
+            requested_action = "execute"
+            normalized["requested_action"] = requested_action
+            normalized["need_human_confirm"] = False
+        elif requested_mode == "auto" and requested_action == "update_task":
+            requested_action = "execute"
+            normalized["requested_action"] = requested_action
+        if requested_action == "execute" and (
+            _dialog_assistant_text_is_low_signal(str(normalized.get("assistant_text", "") or ""))
+            or "confirm" in str(normalized.get("assistant_text", "") or "").lower()
+            or "确认" in str(normalized.get("assistant_text", "") or "")
+            or not _dialog_assistant_text_mentions_execution(
+                str(normalized.get("assistant_text", "") or "")
+            )
+        ):
+            execute_target = (
+                str(normalized.get("target_hint", "") or "").strip()
+                or str(normalized.get("target_label", "") or "").strip()
+                or str((visual_focus or {}).get("target_hint", "") or "").strip()
+                or str((visual_focus or {}).get("label", "") or "").strip()
+            )
+            if execute_target:
+                normalized["assistant_text"] = _dialog_reply_text(
+                    requested_reply_language,
+                    f"我已将任务更新为抓取{execute_target}，并开始按当前视觉目标继续执行。",
+                    f"I updated the task to pick the {execute_target} and started execution with the current visual target.",
+                )
         if visual_focus is not None:
             self._set_dialog_visual_focus(visual_focus)
         self.get_logger().info(
@@ -2956,8 +3648,10 @@ class TactileWebGateway(Node):
                     "task",
                     "target_label",
                     "target_hint",
+                    "target_instance",
                     "constraints",
                     "excluded_labels",
+                    "detection_spec",
                     "confidence",
                     "need_human_confirm",
                     "reason",
@@ -3035,13 +3729,18 @@ class TactileWebGateway(Node):
         if not target_name:
             self._set_dialog_status(status="ready", pending_auto_execute=False, last_error="")
             return "Auto mode held execution because the target is still unspecified."
+        explicit_execute_intent = _dialog_mentions_execute_intent(user_text) and not _dialog_mentions_answer_query(user_text)
+        if explicit_execute_intent:
+            need_human_confirm = False
         if (
             need_human_confirm
             and confidence >= self.dialog_auto_execute_confidence_threshold
             and _dialog_mentions_execute_intent(user_text)
         ):
             need_human_confirm = False
-        if need_human_confirm or confidence < self.dialog_auto_execute_confidence_threshold:
+        if need_human_confirm or (
+            confidence < self.dialog_auto_execute_confidence_threshold and not explicit_execute_intent
+        ):
             self._set_dialog_status(status="ready", pending_auto_execute=False, last_error="")
             self.get_logger().info(
                 "dialog auto execute held: "
@@ -3062,52 +3761,23 @@ class TactileWebGateway(Node):
             f"confidence={float(confidence):.3f} "
             f"threshold={float(self.dialog_auto_execute_confidence_threshold):.3f}"
         )
-
-        sweep_ok, sweep_message = self._call_trigger(
-            self.start_search_sweep_client,
-            timeout_sec=1.0,
+        ok, message, _ = self.execute_pick(
+            start_search_sweep=True,
+            allow_queue=False,
+            request_source="auto_execute",
         )
-        if not sweep_ok:
-            self._set_dialog_status(status="error", pending_auto_execute=False, last_error=sweep_message)
-            return f"Auto mode could not start the search sweep: {sweep_message}"
-
-        with self._lock:
-            target_locked = bool(self._target_locked)
-            pick_active = bool(self._pick_active)
-        if pick_active:
+        if ok:
             self._set_dialog_status(status="auto_executing", pending_auto_execute=False, last_error="")
-            return "Auto mode kept the updated task, but a pick is already running."
-
-        snapshot = self._dialog_context_snapshot()
-        selected_candidate = snapshot.get("selected_candidate")
-        if (
-            not target_locked
-            and isinstance(selected_candidate, dict)
-            and float(selected_candidate.get("confidence", 0.0) or 0.0) >= 0.1
-        ):
-            ok, message, _ = self.execute_pick()
-            if ok:
-                self._set_dialog_status(status="awaiting_lock", pending_auto_execute=False, last_error="")
-                self._append_dialog_message(
-                    "system",
-                    "Auto mode started pregrasp preparation and is waiting for final target lock.",
-                )
-                return "Auto mode started pregrasp preparation and is waiting for final target lock."
-
-        if target_locked:
-            self._set_dialog_status(status="auto_executing", pending_auto_execute=False, last_error="")
-            threading.Thread(
-                target=self._run_auto_execute,
-                args=("target already locked",),
-                daemon=True,
-            ).start()
-            return "Auto mode accepted the task and started execution immediately."
-
-        self._set_dialog_status(status="awaiting_lock", pending_auto_execute=True, last_error="")
-        return "Auto mode accepted the task and is waiting for target lock before executing."
+            return "Auto mode accepted the task and handed execution to the task executive."
+        self._set_dialog_status(status="error", pending_auto_execute=False, last_error=message)
+        return f"Auto mode could not start execution: {message}"
 
     def _run_auto_execute(self, reason: str) -> None:
-        ok, message, _ = self.execute_pick()
+        ok, message, _ = self.execute_pick(
+            start_search_sweep=True,
+            allow_queue=False,
+            request_source="auto_execute",
+        )
         if ok:
             self._append_dialog_message("system", f"Auto execute requested: {reason}.")
             self._set_dialog_status(status="auto_executing", pending_auto_execute=False, last_error="")
@@ -3134,6 +3804,48 @@ class TactileWebGateway(Node):
                 daemon=True,
             ).start()
 
+    def _run_pending_manual_execute(self, reason: str) -> None:
+        ok, message, _ = self.execute_pick(
+            start_search_sweep=False,
+            allow_queue=False,
+            request_source="manual_queue",
+        )
+        if ok:
+            self._set_pending_execute(False)
+            self._record_event(
+                "execution",
+                "info",
+                f"queued execute started: {reason}",
+                feedback=False,
+            )
+            return
+        lowered = str(message or "").strip().lower()
+        with self._lock:
+            self._pending_execute_dispatching = False
+            self._state_version += 1
+        if "target is not locked" in lowered:
+            return
+        self._set_pending_execute(False)
+
+    def _maybe_run_pending_manual_execute(self, locked: bool) -> None:
+        if not locked:
+            return
+        with self._lock:
+            should_execute = bool(self._pending_execute.get("active", False)) and str(
+                self._pending_execute.get("source", "") or ""
+            ) == "manual" and not bool(self._pick_active) and not bool(
+                self._pending_execute_dispatching
+            )
+            if should_execute:
+                self._pending_execute_dispatching = True
+                self._state_version += 1
+        if should_execute:
+            threading.Thread(
+                target=self._run_pending_manual_execute,
+                args=("target lock acquired",),
+                daemon=True,
+            ).start()
+
     def _call_service_request(
         self, client: Any, request: Any, timeout_sec: float = 4.0
     ) -> tuple[bool, str, Any]:
@@ -3156,6 +3868,266 @@ class TactileWebGateway(Node):
             return False, error or "service call failed"
         return bool(result.success), str(result.message or "")
 
+    def _current_task_goal_payload(self) -> dict[str, Any]:
+        with self._lock:
+            semantic = copy.deepcopy(self._semantic_task)
+            semantic_result = copy.deepcopy(self._semantic_result)
+        merged = {**semantic, **semantic_result}
+        transport_constraints = [
+            str(item).strip()
+            for item in list(
+                semantic_result.get("transport_constraints", semantic.get("constraints", [])) or []
+            )
+            if str(item).strip()
+        ]
+        execution_constraints = [
+            str(item).strip()
+            for item in list(semantic_result.get("execution_constraints", []) or [])
+            if str(item).strip()
+        ]
+        return {
+            "goal_type": str(semantic_result.get("goal_type", "") or ""),
+            "task": str(merged.get("task", self.default_task) or self.default_task),
+            "target_label": str(merged.get("target_label", "") or ""),
+            "target_hint": str(merged.get("target_hint", "") or ""),
+            "target_instance": _target_instance_from_payload(merged),
+            "grasp_region": str(semantic_result.get("grasp_region", "") or ""),
+            "placement_label": str(semantic_result.get("placement_label", "") or ""),
+            "transport_constraints": transport_constraints,
+            "execution_constraints": execution_constraints,
+            "excluded_labels": [
+                str(item).strip()
+                for item in list(merged.get("excluded_labels", []) or [])
+                if str(item).strip()
+            ],
+            "confidence": float(merged.get("confidence", 0.0) or 0.0),
+            "need_human_confirm": bool(merged.get("need_human_confirm", False)),
+            "allow_instance_grounding": bool(
+                semantic_result.get("allow_instance_grounding", True)
+            ),
+            "require_target_lock": bool(semantic_result.get("require_target_lock", False)),
+            "allow_replan": bool(semantic_result.get("allow_replan", True)),
+            "allow_rescan": bool(semantic_result.get("allow_rescan", True)),
+            "max_retries": max(0, int(semantic_result.get("max_retries", 1) or 1)),
+            "planning_timeout_sec": float(semantic_result.get("planning_timeout_sec", 0.0) or 0.0),
+            "execution_timeout_sec": float(
+                semantic_result.get("execution_timeout_sec", 0.0) or 0.0
+            ),
+            "success_criteria": str(semantic_result.get("success_criteria", "") or ""),
+            "failure_policy": str(semantic_result.get("failure_policy", "") or ""),
+            "reason": str(merged.get("reason", "") or ""),
+            "prompt_text": str(
+                merged.get("prompt_text", self._last_prompt_text) or self._last_prompt_text
+            ),
+            "raw_json": str(merged.get("raw_json", "") or ""),
+        }
+
+    def _build_task_goal_msg(
+        self,
+        *,
+        start_search_sweep: bool,
+    ) -> Optional[TaskGoal]:
+        payload = self._current_task_goal_payload()
+        target_name = str(payload.get("target_label") or payload.get("target_hint") or "").strip()
+        if not target_name:
+            return None
+        target_instance = _target_instance_from_payload(payload)
+        goal_msg = TaskGoal()
+        goal_msg.header.stamp = self.get_clock().now().to_msg()
+        goal_msg.schema_version = str(payload.get("schema_version", "") or "").strip() or "task_goal.v2alpha1"
+        goal_msg.goal_id = uuid4().hex[:12]
+        goal_msg.parent_goal_id = str(payload.get("parent_goal_id", "") or "").strip()
+        goal_msg.step_id = str(payload.get("step_id", "") or "").strip() or "pick"
+        goal_msg.step_index = int(payload.get("step_index", 0) or 0)
+        goal_msg.goal_type = str(payload.get("goal_type", "") or "").strip() or "pick"
+        goal_msg.task = str(payload.get("task", self.default_task) or self.default_task).strip()
+        goal_msg.target_label = str(payload.get("target_label", "") or "").strip()
+        goal_msg.target_hint = str(payload.get("target_hint", goal_msg.target_label) or goal_msg.target_label).strip()
+        goal_msg.target_attributes = [
+            str(item).strip()
+            for item in list(payload.get("target_attributes", []) or [])
+            if str(item).strip()
+        ]
+        goal_msg.target_relations = [
+            str(item).strip()
+            for item in list(payload.get("target_relations", []) or [])
+            if str(item).strip()
+        ]
+        goal_msg.target_instance_track_id = int((target_instance or {}).get("track_id", 0) or 0)
+        goal_msg.target_instance_bbox_xyxy = list((target_instance or {}).get("bbox_xyxy", []) or [])
+        goal_msg.target_instance_point_px = list((target_instance or {}).get("point_px", []) or [])
+        goal_msg.target_instance_source = str((target_instance or {}).get("source", "") or "")
+        goal_msg.target_part_query = str(
+            payload.get("target_part_query", payload.get("grasp_region", "")) or ""
+        ).strip()
+        goal_msg.preferred_part_tags = [
+            str(item).strip()
+            for item in list(payload.get("preferred_part_tags", []) or [])
+            if str(item).strip()
+        ]
+        if (not list(goal_msg.preferred_part_tags)) and str(goal_msg.target_part_query or "").strip():
+            goal_msg.preferred_part_tags = [str(goal_msg.target_part_query).strip()]
+        goal_msg.forbidden_part_tags = [
+            str(item).strip()
+            for item in list(payload.get("forbidden_part_tags", []) or [])
+            if str(item).strip()
+        ]
+        goal_msg.grasp_region = str(payload.get("grasp_region", "") or "").strip()
+        goal_msg.preferred_grasp_family = str(
+            payload.get("preferred_grasp_family", "") or ""
+        ).strip()
+        goal_msg.placement_label = str(payload.get("placement_label", "") or "").strip()
+        goal_msg.preferred_approach_dirs = [
+            str(item).strip()
+            for item in list(payload.get("preferred_approach_dirs", []) or [])
+            if str(item).strip()
+        ]
+        goal_msg.forbidden_approach_dirs = [
+            str(item).strip()
+            for item in list(payload.get("forbidden_approach_dirs", []) or [])
+            if str(item).strip()
+        ]
+        goal_msg.transport_constraints = [
+            str(item).strip()
+            for item in list(payload.get("transport_constraints", []) or [])
+            if str(item).strip()
+        ]
+        goal_msg.execution_constraints = [
+            str(item).strip()
+            for item in list(payload.get("execution_constraints", []) or [])
+            if str(item).strip()
+        ]
+        goal_msg.excluded_labels = [
+            str(item).strip()
+            for item in list(payload.get("excluded_labels", []) or [])
+            if str(item).strip()
+        ]
+        goal_msg.reserved_next_skills = [
+            str(item).strip()
+            for item in list(payload.get("reserved_next_skills", []) or [])
+            if str(item).strip()
+        ]
+        goal_msg.confidence = float(payload.get("confidence", 0.0) or 0.0)
+        goal_msg.min_affordance_score = float(payload.get("min_affordance_score", 0.0) or 0.0)
+        goal_msg.min_grasp_quality = float(payload.get("min_grasp_quality", 0.0) or 0.0)
+        goal_msg.max_forbidden_overlap = float(payload.get("max_forbidden_overlap", 0.0) or 0.0)
+        goal_msg.max_target_staleness_sec = float(
+            payload.get("max_target_staleness_sec", 0.0) or 0.0
+        )
+        goal_msg.need_human_confirm = bool(payload.get("need_human_confirm", False))
+        goal_msg.start_search_sweep = bool(start_search_sweep)
+        goal_msg.allow_instance_grounding = bool(payload.get("allow_instance_grounding", True))
+        goal_msg.require_target_lock = bool(payload.get("require_target_lock", False))
+        goal_msg.allow_replan = bool(payload.get("allow_replan", True))
+        goal_msg.allow_rescan = bool(payload.get("allow_rescan", True))
+        goal_msg.strict_part_match = bool(payload.get("strict_part_match", False))
+        goal_msg.strict_approach_match = bool(payload.get("strict_approach_match", False))
+        goal_msg.max_retries = max(0, int(payload.get("max_retries", 1) or 1))
+        goal_msg.planning_timeout_sec = float(payload.get("planning_timeout_sec", 0.0) or 0.0)
+        goal_msg.execution_timeout_sec = float(payload.get("execution_timeout_sec", 0.0) or 0.0)
+        goal_msg.success_criteria = str(payload.get("success_criteria", "") or "").strip()
+        goal_msg.failure_policy = str(payload.get("failure_policy", "") or "").strip()
+        goal_msg.verify_policy = str(payload.get("verify_policy", "") or "").strip()
+        goal_msg.recovery_policy = str(payload.get("recovery_policy", "") or "").strip()
+        goal_msg.handoff_context_json = str(
+            payload.get("handoff_context_json", "") or ""
+        ).strip()
+        goal_msg.reason = str(payload.get("reason", "") or "").strip()
+        goal_msg.prompt_text = str(payload.get("prompt_text", self._last_prompt_text) or self._last_prompt_text).strip()
+        goal_msg.raw_json = str(payload.get("raw_json", "") or "").strip()
+        return goal_msg
+
+    def _on_execute_task_result(self, goal_id: str, future: Any) -> None:
+        try:
+            wrapped_result = future.result()
+            result = getattr(wrapped_result, "result", None)
+        except Exception as exc:  # noqa: BLE001
+            self.get_logger().warn(f"execute_task result callback failed: {exc}")
+            return
+        with self._lock:
+            if str(self._active_execute_task_goal_id or "") == str(goal_id or ""):
+                self._execute_task_goal_handle = None
+                self._active_execute_task_goal_id = ""
+            ignored = str(goal_id or "") in self._ignored_task_goal_ids
+            if ignored:
+                self._ignored_task_goal_ids.discard(str(goal_id or ""))
+        if result is None:
+            return
+        if ignored:
+            return
+        status = _task_execution_status_to_dict(result.status)
+        with self._lock:
+            self._task_execution_status = status
+            self._state_version += 1
+
+    def _send_execute_task_goal(
+        self,
+        goal_msg: TaskGoal,
+        *,
+        timeout_sec: float = 12.0,
+    ) -> tuple[bool, str]:
+        if not self.execute_task_client.wait_for_server(timeout_sec=timeout_sec):
+            return False, "task executive action unavailable"
+        request = ExecuteTask.Goal()
+        request.goal = goal_msg
+        future = self.execute_task_client.send_goal_async(request)
+        done = threading.Event()
+        future.add_done_callback(lambda _: done.set())
+        if not done.wait(timeout_sec):
+            return False, "task goal request timed out"
+        try:
+            goal_handle = future.result()
+        except Exception as exc:  # noqa: BLE001
+            return False, str(exc)
+        if goal_handle is None or not bool(goal_handle.accepted):
+            return False, "task goal rejected"
+        result_future = goal_handle.get_result_async()
+        result_future.add_done_callback(
+            lambda future, goal_id=str(goal_msg.goal_id or ""): self._on_execute_task_result(goal_id, future)
+        )
+        with self._lock:
+            self._execute_task_goal_handle = goal_handle
+            self._active_execute_task_goal_id = str(goal_msg.goal_id or "")
+            self._ignored_task_goal_ids.discard(self._active_execute_task_goal_id)
+            self._task_goal = _task_goal_to_dict(goal_msg)
+            self._state_version += 1
+        return True, f"task goal accepted ({goal_msg.goal_id})"
+
+    def _interrupt_active_execution(self, *, reason: str, timeout_sec: float = 2.0) -> tuple[bool, str]:
+        self._set_pending_execute(False)
+        self._set_intervention(False)
+        self._set_dialog_status(status="idle", pending_auto_execute=False, last_error="")
+        with self._lock:
+            goal_handle = self._execute_task_goal_handle
+            goal_id = str(self._active_execute_task_goal_id or "")
+            if goal_id:
+                self._ignored_task_goal_ids.add(goal_id)
+            self._execute_task_goal_handle = None
+            self._active_execute_task_goal_id = ""
+            self._task_goal = {"updated_at": 0.0}
+            self._task_execution_status = {
+                "phase": "idle",
+                "message": str(reason or "execution interrupted"),
+                "updated_at": _now_sec(),
+            }
+            self._pending_execute_dispatching = False
+            self._state_version += 1
+        if goal_handle is None:
+            return True, "no active task goal"
+        future = goal_handle.cancel_goal_async()
+        done = threading.Event()
+        future.add_done_callback(lambda _: done.set())
+        if not done.wait(max(0.1, float(timeout_sec))):
+            return False, "task cancel request timed out"
+        try:
+            response = future.result()
+        except Exception as exc:  # noqa: BLE001
+            return False, str(exc)
+        goals_canceling = list(getattr(response, "goals_canceling", []) or [])
+        if goals_canceling:
+            return True, "task cancel requested"
+        return True, "task already terminal"
+
     def _call_set_bool(self, client: Any, value: bool, timeout_sec: float = 4.0) -> tuple[bool, str]:
         request = SetBool.Request()
         request.data = bool(value)
@@ -3163,6 +4135,82 @@ class TactileWebGateway(Node):
         if not ok or result is None:
             return False, error or "service call failed"
         return bool(result.success), str(result.message or "")
+
+    def _execution_backend_ready(self) -> bool:
+        try:
+            action_ready = bool(self.execute_task_client.server_is_ready())
+        except Exception:
+            action_ready = False
+        try:
+            reset_ready = bool(self.reset_pick_client.service_is_ready())
+        except Exception:
+            reset_ready = False
+        try:
+            return_home_ready = bool(self.return_home_client.service_is_ready())
+        except Exception:
+            return_home_ready = False
+        try:
+            search_ready = bool(self.start_search_sweep_client.service_is_ready())
+        except Exception:
+            search_ready = False
+        return bool(
+            action_ready
+            and reset_ready
+            and return_home_ready
+            and search_ready
+            and self._dialog_model_ready()
+            and self._perception_pipeline_ready()
+        )
+
+    def _dialog_model_health_url(self) -> str:
+        endpoint = str(self.dialog_model_endpoint or "").strip()
+        if not endpoint:
+            return ""
+        parts = urlsplit(endpoint)
+        path = str(parts.path or "").strip()
+        if path.endswith("/chat/completions"):
+            path = path[: -len("/chat/completions")] + "/models"
+        elif path.endswith("/v1"):
+            path = path + "/models"
+        else:
+            path = "/v1/models"
+        return urlunsplit((parts.scheme, parts.netloc, path, "", ""))
+
+    def _dialog_model_ready(self) -> bool:
+        now_sec = _now_sec()
+        cached_checked_at = float(self._dialog_endpoint_health.get("checked_at", 0.0) or 0.0)
+        if (now_sec - cached_checked_at) <= 2.0:
+            return bool(self._dialog_endpoint_health.get("ready", False))
+
+        ready = False
+        health_url = self._dialog_model_health_url()
+        if health_url:
+            try:
+                headers = {}
+                if self.dialog_api_key:
+                    headers["Authorization"] = f"Bearer {self.dialog_api_key}"
+                response = self._dialog_http.get(
+                    health_url,
+                    headers=headers,
+                    timeout=max(0.25, min(1.0, float(self.dialog_request_timeout_sec))),
+                )
+                ready = bool(response.ok)
+            except Exception:
+                ready = False
+
+        self._dialog_endpoint_health["ready"] = bool(ready)
+        self._dialog_endpoint_health["checked_at"] = now_sec
+        return bool(ready)
+
+    def _perception_pipeline_ready(self) -> bool:
+        latest_detection_at = max(
+            float(self._detection_result.get("updated_at", 0.0) or 0.0),
+            float(self._detection_debug.get("updated_at", 0.0) or 0.0),
+            float(self.rgb_stream.latest().updated_at or 0.0),
+        )
+        if latest_detection_at <= 0.0:
+            return False
+        return (_now_sec() - latest_detection_at) <= 3.0
 
     def _call_world_reset(self, *, model_only: bool = True, timeout_sec: float = 4.0) -> tuple[bool, str]:
         request = ControlWorld.Request()
@@ -3235,27 +4283,22 @@ class TactileWebGateway(Node):
         return "powershell.exe"
 
     def open_debug_views(self) -> tuple[bool, str, dict[str, Any]]:
-        request_id = f"{int(time.time() * 1000)}"
-        request = {
-            "request_id": request_id,
-            "distro": str(os.environ.get("WSL_DISTRO_NAME", "Ubuntu-24.04") or "Ubuntu-24.04"),
-            "open_gazebo_gui": self.debug_open_gazebo_gui,
-            "open_rviz": self.debug_open_rviz,
-        }
-        request_json = json.dumps(request).replace("'", "''")
+        distro = str(os.environ.get("WSL_DISTRO_NAME", "Ubuntu-24.04") or "Ubuntu-24.04")
+        script_path = self._debug_open_views_script_path()
         args = [
             self._windows_powershell_exe(),
             "-NoProfile",
             "-ExecutionPolicy",
             "Bypass",
-            "-Command",
-            (
-                "$runtimeDir = Join-Path $env:LOCALAPPDATA 'ProgrammeWebUI'; "
-                "New-Item -ItemType Directory -Path $runtimeDir -Force | Out-Null; "
-                "$requestFile = Join-Path $runtimeDir 'debug-open-request.json'; "
-                f"Set-Content -Path $requestFile -Value '{request_json}' -Encoding UTF8"
-            ),
+            "-File",
+            script_path,
+            "-Distro",
+            distro,
         ]
+        if self.debug_open_gazebo_gui:
+            args.append("-OpenGazeboGui")
+        if self.debug_open_rviz:
+            args.append("-OpenRviz")
         ok = False
         message = "debug views disabled"
         try:
@@ -3329,12 +4372,17 @@ class TactileWebGateway(Node):
             if not enable_ok:
                 last_error = f"enable failed: {enable_message}"
             else:
+                move_timeout_sec = max(
+                    4.0,
+                    float(self.return_home_duration_ms) / 1000.0
+                    + (3.0 if self.return_home_wait_for_completion else 1.5),
+                )
                 move_ok, move_message = self._call_move_joints(
                     self.return_home_joint_ids,
                     self.return_home_joint_angles_deg,
                     duration_ms=self.return_home_duration_ms,
                     wait=self.return_home_wait_for_completion,
-                    timeout_sec=4.0,
+                    timeout_sec=move_timeout_sec,
                 )
                 if move_ok:
                     return True, move_message or "trajectory goal accepted"
@@ -3343,6 +4391,20 @@ class TactileWebGateway(Node):
                 time.sleep(max(0.1, retry_delay_sec))
         self.get_logger().warn(f"{reason}: {last_error}")
         return False, last_error
+
+    def _request_stop_search_sweep(
+        self,
+        *,
+        reason: str,
+        timeout_sec: float = 1.5,
+    ) -> tuple[bool, str]:
+        ok, message = self._call_trigger(
+            self.stop_search_sweep_client,
+            timeout_sec=timeout_sec,
+        )
+        if not ok:
+            self.get_logger().warn(f"{reason}: stop search sweep failed: {message}")
+        return ok, message
 
     def _startup_prepare_home_worker(self) -> None:
         time.sleep(self.startup_prepare_home_delay_sec)
@@ -3366,6 +4428,7 @@ class TactileWebGateway(Node):
         self.prompt_pub.publish(message)
         self._last_prompt_text = message.data
         self._set_intervention(False)
+        self._set_pending_execute(False)
         sweep_ok, sweep_message = self._call_trigger(self.start_search_sweep_client, timeout_sec=1.0)
         self._record_event(
             "prompt",
@@ -3389,6 +4452,7 @@ class TactileWebGateway(Node):
     def publish_override(self, payload: dict[str, Any]) -> dict[str, Any]:
         target_label = str(payload.get("target_label", "") or "").strip()
         target_hint = str(payload.get("target_hint", "") or target_label).strip()
+        self._set_pending_execute(False)
         semantic = self._publish_semantic_payload(
             {
                 **payload,
@@ -3410,6 +4474,7 @@ class TactileWebGateway(Node):
         return self.build_state()
 
     def replan(self) -> tuple[bool, str, dict[str, Any]]:
+        self._set_pending_execute(False)
         ok, message = self._call_trigger(self.reset_pick_client)
         if not ok:
             self._record_event("execution", "error", f"replan failed: {message}", feedback=True)
@@ -3439,32 +4504,122 @@ class TactileWebGateway(Node):
         )
         return True, "pick session reset", self.build_state()
 
-    def execute_pick(self) -> tuple[bool, str, dict[str, Any]]:
-        ok, message = self._call_trigger(self.execute_pick_client)
+    def execute_pick(
+        self,
+        *,
+        start_search_sweep: bool = True,
+        allow_queue: bool = True,
+        request_source: str = "manual_api",
+    ) -> tuple[bool, str, dict[str, Any]]:
+        del allow_queue
+        goal_msg = self._build_task_goal_msg(start_search_sweep=start_search_sweep)
+        if goal_msg is None:
+            message = "no structured task is ready for execution"
+            self._record_event("execution", "error", message, feedback=True)
+            return False, message, self.build_state()
+
+        ok, message = self._send_execute_task_goal(goal_msg)
+        if ok:
+            self._set_pending_execute(False)
+            self._record_event(
+                "execution",
+                "info",
+                "task execute request accepted",
+                data={
+                    "request_source": request_source,
+                    "goal_id": goal_msg.goal_id,
+                    "goal_type": goal_msg.goal_type,
+                    "task": goal_msg.task,
+                    "target_label": goal_msg.target_label or goal_msg.target_hint,
+                    "start_search_sweep": bool(start_search_sweep),
+                },
+                feedback=True,
+            )
+            return True, message, self.build_state()
+
         self._record_event(
             "execution",
-            "info" if ok else "error",
-            "execute request accepted" if ok else f"execute request failed: {message}",
+            "error",
+            f"execute request failed: {message}",
+            data={
+                "request_source": request_source,
+                "target_label": goal_msg.target_label or goal_msg.target_hint,
+                "goal_type": goal_msg.goal_type,
+            },
             feedback=True,
         )
-        return ok, message, self.build_state()
+        return False, message, self.build_state()
 
     def return_home(self) -> tuple[bool, str, dict[str, Any]]:
-        ok, message = self._request_return_home_motion(
+        cancel_ok, cancel_message = self._interrupt_active_execution(reason="return home")
+        stop_ok, stop_message = self._request_stop_search_sweep(
             reason="return home request",
-            retries=2,
-            retry_delay_sec=0.5,
+            timeout_sec=1.5,
         )
+        trigger_timeout_sec = max(
+            6.0,
+            float(self.return_home_duration_ms) / 1000.0
+            + (3.0 if self.return_home_wait_for_completion else 1.5),
+        )
+        home_ok, home_message = self._call_trigger(
+            self.return_home_client, timeout_sec=trigger_timeout_sec
+        )
+        if not home_ok:
+            home_ok, home_message = self._request_return_home_motion(
+                reason="return home request",
+                retries=2,
+                retry_delay_sec=0.5,
+            )
+        detail_parts = [
+            f"task interrupt: {cancel_message}",
+            f"stop sweep: {stop_message}",
+            f"return home: {home_message}",
+        ]
         self._record_event(
             "execution",
-            "info" if ok else "error",
-            "return home requested" if ok else f"return home failed: {message}",
+            "info" if home_ok else "error",
+            "return home requested"
+            if home_ok
+            else f"return home failed: {' | '.join(detail_parts)}",
+            data={
+                "task_interrupt_ok": bool(cancel_ok),
+                "stop_search_sweep_ok": bool(stop_ok),
+                "return_home_ok": bool(home_ok),
+            },
             feedback=True,
         )
-        return ok, message, self.build_state()
+        return home_ok, " | ".join(detail_parts), self.build_state()
 
     def reset_scene(self) -> tuple[bool, str, dict[str, Any]]:
-        reset_pick_ok, reset_pick_message = self._call_trigger(self.reset_pick_client, timeout_sec=1.5)
+        cancel_ok, cancel_message = self._interrupt_active_execution(reason="scene reset")
+        stop_ok, stop_message = self._request_stop_search_sweep(
+            reason="scene reset request",
+            timeout_sec=1.5,
+        )
+        home_ok = True
+        home_message = "skipped"
+        session_ok = True
+        session_message = "skipped"
+        if self.scene_reset_return_home_after_reset:
+            trigger_timeout_sec = max(
+                6.0,
+                float(self.return_home_duration_ms) / 1000.0
+                + (3.0 if self.return_home_wait_for_completion else 1.5),
+            )
+            home_ok, home_message = self._call_trigger(
+                self.return_home_client, timeout_sec=trigger_timeout_sec
+            )
+            if not home_ok:
+                home_ok, home_message = self._request_return_home_motion(
+                    reason="scene reset home prepare",
+                    retries=3,
+                    retry_delay_sec=0.5,
+                )
+            session_ok, session_message = self._call_trigger(self.reset_pick_client, timeout_sec=1.5)
+        else:
+            session_ok, session_message = self._call_trigger(
+                self.reset_pick_client, timeout_sec=1.5
+            )
         world_ok = True
         world_message = "skipped"
         if self.scene_reset_use_world_reset:
@@ -3473,31 +4628,57 @@ class TactileWebGateway(Node):
         if (world_ok or pose_ok) and self.scene_reset_delay_sec > 0.0:
             time.sleep(self.scene_reset_delay_sec)
 
-        home_ok = True
-        home_message = "skipped"
-        if (world_ok or pose_ok) and self.scene_reset_return_home_after_reset:
-            home_ok, home_message = self._request_return_home_motion(
-                reason="scene reset home prepare",
-                retries=3,
-                retry_delay_sec=0.5,
-            )
-
         scene_ok = bool(world_ok or pose_ok)
-        ok = bool(scene_ok and (home_ok or not self.scene_reset_return_home_after_reset))
-        detail_parts = []
-        if not reset_pick_ok:
-            detail_parts.append(f"pick reset: {reset_pick_message}")
+        ok = bool(scene_ok and session_ok and home_ok)
+        with self._lock:
+            restore_waiting_execute = bool(self._target_locked)
+            self._grasp_proposals = {
+                "updated_at": 0.0,
+                "proposals": [],
+                "selected_index": 0,
+                "count": 0,
+            }
+            self._grasp_backend_debug = {"updated_at": 0.0}
+            if restore_waiting_execute:
+                self._pick_status = {
+                    "phase": "waiting_execute",
+                    "message": "target locked; waiting for explicit execute command",
+                    "updated_at": _now_sec(),
+                }
+                self._task_execution_status = {
+                    "phase": "waiting_execute",
+                    "message": "target locked; waiting for explicit execute command",
+                    "updated_at": _now_sec(),
+                }
+            else:
+                self._pick_status = {
+                    "phase": "idle",
+                    "message": "scene reset",
+                    "updated_at": _now_sec(),
+                }
+                self._task_execution_status = {
+                    "phase": "idle",
+                    "message": "scene reset",
+                    "updated_at": _now_sec(),
+                }
+            self._pick_active = False
+            self._state_version += 1
+        detail_parts = [f"task interrupt: {cancel_message}", f"stop sweep: {stop_message}"]
+        detail_parts.append(
+            f"{'return home' if self.scene_reset_return_home_after_reset else 'pick reset'}: "
+            f"{session_message}"
+        )
         detail_parts.append(f"world reset: {world_message}")
         detail_parts.append(f"target pose: {pose_message}")
-        if self.scene_reset_return_home_after_reset:
-            detail_parts.append(f"return home: {home_message}")
         message = " | ".join(part for part in detail_parts if part)
         self._record_event(
             "execution",
             "info" if ok else "error",
             "scene reset requested" if ok else f"scene reset failed: {message}",
             data={
-                "pick_reset_ok": reset_pick_ok,
+                "task_interrupt_ok": bool(cancel_ok),
+                "stop_search_sweep_ok": bool(stop_ok),
+                "session_reset_ok": bool(session_ok),
                 "world_reset_ok": world_ok,
                 "target_pose_ok": pose_ok,
                 "return_home_ok": home_ok,
@@ -3511,6 +4692,8 @@ class TactileWebGateway(Node):
         with self._lock:
             semantic = copy.deepcopy(self._semantic_task)
             semantic_result = copy.deepcopy(self._semantic_result)
+            task_goal = copy.deepcopy(self._task_goal)
+            task_status = copy.deepcopy(self._task_execution_status)
             detection = copy.deepcopy(self._detection_result)
             detection_debug = copy.deepcopy(self._detection_debug)
             pick_status = copy.deepcopy(self._pick_status)
@@ -3519,6 +4702,7 @@ class TactileWebGateway(Node):
             tactile = copy.deepcopy(self._tactile)
             arm_state = copy.deepcopy(self._arm_state)
             intervention = copy.deepcopy(self._intervention)
+            pending_execute = copy.deepcopy(self._pending_execute)
             health_by_node = copy.deepcopy(self._health_by_node)
             dialog = copy.deepcopy(self._dialog)
             scene_target_pose = copy.deepcopy(self._scene_target_pose)
@@ -3558,6 +4742,8 @@ class TactileWebGateway(Node):
             )
 
         execution_updated_at = max(
+            float(task_goal.get("updated_at", 0.0)),
+            float(task_status.get("updated_at", 0.0)),
             float(pick_status.get("updated_at", 0.0)),
             float(detection.get("updated_at", 0.0)),
             float(proposals.get("updated_at", 0.0)),
@@ -3565,16 +4751,18 @@ class TactileWebGateway(Node):
 
         phase = self._derive_phase(
             semantic=semantic,
+            task_status=task_status,
             detection=detection,
             detection_debug=detection_debug,
             target_locked=target_locked,
             pick_active=pick_active,
             pick_status=pick_status,
         )
+        backend_ready = self._execution_backend_ready()
         return _json_compatible(
             {
                 "connection": {
-                    "backend_ready": True,
+                    "backend_ready": bool(backend_ready),
                     "backend_time": _now_sec(),
                     "state_version": state_version,
                     "host": self.host,
@@ -3607,6 +4795,9 @@ class TactileWebGateway(Node):
                     "phase": phase,
                     "target_locked": target_locked,
                     "pick_active": pick_active,
+                    "pending_execute": pending_execute,
+                    "task_goal": task_goal,
+                    "task_status": task_status,
                     "pick_status": pick_status,
                     "intervention": intervention,
                     "grasp_proposals": proposals,
@@ -3653,12 +4844,16 @@ class TactileWebGateway(Node):
         self,
         *,
         semantic: dict[str, Any],
+        task_status: dict[str, Any],
         detection: dict[str, Any],
         detection_debug: dict[str, Any],
         target_locked: bool,
         pick_active: bool,
         pick_status: dict[str, Any],
     ) -> str:
+        task_phase = str(task_status.get("phase", "") or "").strip()
+        if task_phase and task_phase != "idle":
+            return task_phase
         pick_phase = str(pick_status.get("phase", "") or "").strip()
         if pick_phase in {"waiting_execute", "planning", "executing", "completed", "error"}:
             return pick_phase
@@ -3729,7 +4924,11 @@ def create_app(bridge: TactileWebGateway) -> Any:
     dist_dir = _frontend_root_dir(bridge)
     assets_dir = dist_dir / "assets"
     if assets_dir.exists():
-        app.mount("/assets", StaticFiles(directory=str(assets_dir)), name="assets")
+        app.mount(
+            "/assets",
+            StaticFiles(directory=str(assets_dir), follow_symlink=True),
+            name="assets",
+        )
 
     @app.get("/api/bootstrap")
     async def bootstrap() -> JSONResponse:
@@ -3878,16 +5077,17 @@ def create_app(bridge: TactileWebGateway) -> Any:
         await websocket.accept()
         last_state_version = -1
         last_sent_at = 0.0
+        poll_interval_sec = max(0.05, float(getattr(bridge, "live_state_period_sec", 0.15)))
         try:
             while True:
                 state = bridge.build_state()
                 state_version = int(state["connection"]["state_version"])
                 now_sec = _now_sec()
-                if state_version != last_state_version or (now_sec - last_sent_at) >= 1.5:
+                if state_version != last_state_version or (now_sec - last_sent_at) >= 1.0:
                     await websocket.send_json(state)
                     last_state_version = state_version
                     last_sent_at = now_sec
-                await asyncio.sleep(0.5)
+                await asyncio.sleep(poll_interval_sec)
         except (WebSocketDisconnect, RuntimeError):
             return
 

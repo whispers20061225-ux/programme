@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import threading
 import time
 from typing import Any, Optional
@@ -25,10 +26,120 @@ DEFAULT_SYSTEM_PROMPT = (
     "You are a robot task-understanding assistant. "
     "Return exactly one JSON object and no markdown or extra commentary. "
     "Required keys: task, target_label, target_hint, constraints, excluded_labels, "
-    "confidence, need_human_confirm, reason. "
+    "confidence, need_human_confirm, reason, detection_spec. "
     "constraints and excluded_labels must be arrays of short strings. "
+    "detection_spec must be a JSON object. "
+    "When a task target exists, detection_spec must include primary_label, prompt_classes, "
+    "negative_labels, and attributes. prompt_classes must be short English detector phrases. "
     "confidence must be a number from 0.0 to 1.0."
 )
+
+
+def _normalized_secret(value: Any) -> str:
+    secret = str(value or "").strip()
+    if not secret or secret.upper() in {"EMPTY", "NONE", "NULL"}:
+        return ""
+    return secret
+
+
+def _normalize_openai_compatible_endpoint(value: Any) -> str:
+    endpoint = str(value or "").strip()
+    if not endpoint:
+        return ""
+    if endpoint.endswith("/v1"):
+        return endpoint + "/chat/completions"
+    if endpoint.endswith("/chat/completions"):
+        return endpoint
+    if endpoint.endswith("/"):
+        endpoint = endpoint[:-1]
+    if endpoint.endswith("/compatible-mode"):
+        return endpoint + "/v1/chat/completions"
+    if endpoint.endswith("/v1/models"):
+        return endpoint[: -len("/models")] + "/chat/completions"
+    return endpoint
+
+
+def _load_remote_vlm_file() -> dict[str, str]:
+    env_file = os.path.expanduser("~/.config/programme/remote_vlm.env")
+    values: dict[str, str] = {}
+    try:
+        with open(env_file, "r", encoding="utf-8") as handle:
+            for raw_line in handle:
+                line = raw_line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                if line.startswith("export "):
+                    line = line[len("export ") :].strip()
+                if "=" not in line:
+                    continue
+                key, value = line.split("=", 1)
+                key = key.strip()
+                value = value.strip()
+                if len(value) >= 2 and value[0] == value[-1] and value[0] in {'"', "'"}:
+                    value = value[1:-1]
+                if key and value:
+                    values[key] = value
+    except OSError:
+        return {}
+    return values
+
+
+def _resolve_runtime_model_config(
+    *,
+    endpoint: Any,
+    model_name: Any,
+    api_key: Any,
+) -> tuple[str, str, str]:
+    resolved_endpoint = _normalize_openai_compatible_endpoint(endpoint)
+    resolved_model = str(model_name or "").strip()
+    resolved_api_key = _normalized_secret(api_key)
+    file_values = _load_remote_vlm_file()
+
+    env_api_key = _normalized_secret(
+        os.getenv("PROGRAMME_DIALOG_API_KEY")
+        or file_values.get("PROGRAMME_DIALOG_API_KEY")
+        or os.getenv("PROGRAMME_REMOTE_VLM_API_KEY")
+        or file_values.get("PROGRAMME_REMOTE_VLM_API_KEY")
+        or os.getenv("DASHSCOPE_API_KEY")
+        or file_values.get("DASHSCOPE_API_KEY")
+        or os.getenv("OPENAI_API_KEY")
+        or file_values.get("OPENAI_API_KEY")
+    )
+    env_endpoint = _normalize_openai_compatible_endpoint(
+        os.getenv("PROGRAMME_DIALOG_MODEL_ENDPOINT")
+        or file_values.get("PROGRAMME_DIALOG_MODEL_ENDPOINT")
+        or os.getenv("PROGRAMME_REMOTE_VLM_ENDPOINT")
+        or file_values.get("PROGRAMME_REMOTE_VLM_ENDPOINT")
+        or os.getenv("DASHSCOPE_BASE_URL")
+        or file_values.get("DASHSCOPE_BASE_URL")
+        or os.getenv("OPENAI_BASE_URL")
+        or file_values.get("OPENAI_BASE_URL")
+    )
+    env_model = str(
+        os.getenv("PROGRAMME_DIALOG_MODEL_NAME")
+        or file_values.get("PROGRAMME_DIALOG_MODEL_NAME")
+        or os.getenv("PROGRAMME_REMOTE_VLM_MODEL")
+        or file_values.get("PROGRAMME_REMOTE_VLM_MODEL")
+        or os.getenv("DASHSCOPE_MODEL")
+        or file_values.get("DASHSCOPE_MODEL")
+        or os.getenv("OPENAI_MODEL")
+        or file_values.get("OPENAI_MODEL")
+        or ""
+    ).strip()
+
+    if env_api_key:
+        resolved_api_key = env_api_key
+    if env_endpoint:
+        resolved_endpoint = env_endpoint
+    if env_model:
+        resolved_model = env_model
+
+    if resolved_api_key and not resolved_endpoint:
+        resolved_endpoint = "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
+    if resolved_api_key and not resolved_model:
+        resolved_model = "qwen-vl-max-latest"
+
+    return resolved_endpoint, resolved_model, resolved_api_key
 
 
 def normalize_semantic_result(
@@ -122,9 +233,11 @@ class QwenSemanticNode(Node):
         self.enabled = bool(self.get_parameter("enabled").value)
         self.use_visual_context = bool(self.get_parameter("use_visual_context").value)
         self.auto_infer_on_start = bool(self.get_parameter("auto_infer_on_start").value)
-        self.model_endpoint = str(self.get_parameter("model_endpoint").value)
-        self.model_name = str(self.get_parameter("model_name").value)
-        self.api_key = str(self.get_parameter("api_key").value)
+        self.model_endpoint, self.model_name, self.api_key = _resolve_runtime_model_config(
+            endpoint=self.get_parameter("model_endpoint").value,
+            model_name=self.get_parameter("model_name").value,
+            api_key=self.get_parameter("api_key").value,
+        )
         self.request_timeout_sec = max(
             1.0, float(self.get_parameter("request_timeout_sec").value)
         )

@@ -23,6 +23,7 @@ setup(
                 "config/kinematics.yaml",
                 "config/joint_limits.yaml",
                 "config/ompl_planning.yaml",
+                "config/pilz_cartesian_limits.yaml",
                 "config/moveit_controllers.yaml",
                 "config/moveit.rviz",
             ],

@@ -17,6 +17,7 @@ import { LogsPage } from "./LogsPage";
 import { TactilePage } from "./TactilePage";
 import { VisionPage } from "./VisionPage";
 import {
+  candidateToTargetInstance,
   createFrontendEvent,
   DEFAULT_STATE,
   type InterventionState,
@@ -27,6 +28,7 @@ import {
 } from "./appHelpers";
 import { type BackendConnectionPhase, useBackendState } from "./appUi";
 import type {
+  CandidateDebug,
   DialogMode,
   DialogReplyLanguage,
   SemanticDraft,
@@ -164,20 +166,51 @@ function App() {
   }, [connectionPhase]);
 
   const updateTask = useCallback((value: string) => { setDraft((current) => ({ ...current, task: value })); markDraftDirty("control_card", currentTarget); }, [currentTarget, markDraftDirty]);
-  const updateTarget = useCallback((value: string) => { setDraft((current) => ({ ...current, target_label: value, target_hint: value })); markDraftDirty("control_card", value); }, [markDraftDirty]);
+  const updateTarget = useCallback((value: string) => {
+    setDraft((current) => ({ ...current, target_label: value, target_hint: value, target_instance: null }));
+    markDraftDirty("control_card", value);
+  }, [markDraftDirty]);
   const updateGripper = useCallback((value: string) => { setDraft((current) => ({ ...current, gripper: value })); markDraftDirty("control_card", currentTarget); }, [currentTarget, markDraftDirty]);
   const updateConstraints = useCallback((value: string) => { setDraft((current) => ({ ...current, constraints: parseConstraintsInput(value) })); markDraftDirty("control_card", currentTarget); }, [currentTarget, markDraftDirty]);
 
-  const setVisionOverride = useCallback((label: string) => {
-    setDraft((current) => ({ ...current, target_label: label, target_hint: label }));
-    markDraftDirty("vision_candidate", label);
-    pushFrontendEvent("vision", "info", `vision candidate staged for override: ${label}`, { label });
-    pushToast("info", "Vision", `Target staged as ${label}`);
-  }, [markDraftDirty, pushFrontendEvent, pushToast]);
+  const setVisionOverride = useCallback((candidate: CandidateDebug) => {
+    const label = candidate.canonical_label || candidate.label_zh || candidate.label || candidate.display_label || "";
+    const overrideDraft: SemanticDraft = {
+      ...draft,
+      target_label: label,
+      target_hint: label,
+      target_instance: candidateToTargetInstance(candidate),
+    };
+    setDraft(overrideDraft);
+    pushFrontendEvent("vision", "info", `vision candidate committed as override: ${label}`, {
+      label,
+      track_id: candidate.track_id,
+      bbox_xyxy: candidate.bbox_xyxy,
+    });
+    pushToast("info", "Vision", `Target switched to ${label}`);
+    void (async () => {
+      try {
+        const next = await postOverride(overrideDraft);
+        setState(next);
+        resetDraftState();
+      } catch (error) {
+        pushToast("error", "Vision", getErrorMessage(error, "Failed to switch vision target."));
+        pushFrontendEvent("vision", "error", "vision candidate override failed", {
+          label,
+          track_id: candidate.track_id,
+          message: getErrorMessage(error, "vision candidate override failed"),
+        });
+      }
+    })();
+  }, [draft, pushFrontendEvent, pushToast, resetDraftState, setState]);
 
   const handleDialogSubmit = useCallback(async (prompt: string) => {
     const trimmed = prompt.trim();
     if (!trimmed) { pushToast("warn", "Dialog", "Please enter a message."); return false; }
+    if (!state.connection.backend_ready) {
+      pushToast("warn", "Dialog", "Execution backend is still warming up. Wait a moment and retry.");
+      return false;
+    }
     setBusyAction("dialog");
     try {
       const next = await postDialogMessage(trimmed, dialogState.mode, dialogState.reply_language);
@@ -189,7 +222,7 @@ function App() {
       pushFrontendEvent("dialog", "error", "dialog message failed", { message: getErrorMessage(error, "dialog message failed") });
       return false;
     } finally { setBusyAction(null); }
-  }, [dialogState.mode, pushFrontendEvent, pushToast, resetDraftState, setState]);
+  }, [dialogState.mode, dialogState.reply_language, pushFrontendEvent, pushToast, resetDraftState, setState, state.connection.backend_ready]);
 
   const handleDialogModeChange = useCallback(async (mode: DialogMode) => {
     try {
@@ -350,7 +383,7 @@ function App() {
         <Routes>
           <Route path="/" element={<Navigate to="/control" replace />} />
           <Route path="/control" element={<ControlPage state={state} streams={streams} draft={draft} draftDirty={draftDirty} busyAction={busyAction} chatMessages={dialogMessages} dialogMode={dialogState.mode} dialogReplyLanguage={dialogState.reply_language} dialogStatusLabel={dialogState.status_label || dialogState.status} dialogPendingAutoExecute={Boolean(dialogState.pending_auto_execute)} onTaskChange={updateTask} onTargetChange={updateTarget} onGripperChange={updateGripper} onConstraintsChange={updateConstraints} onDialogSubmit={handleDialogSubmit} onDialogModeChange={handleDialogModeChange} onDialogReplyLanguageChange={handleDialogReplyLanguageChange} onDialogReset={handleDialogReset} onExecute={handleExecute} onReplan={handleReplan} onReturnHome={handleReturnHome} onResetScene={handleResetScene} onOpenDebugViews={handleOpenDebugViews} />} />
-          <Route path="/vision" element={<VisionPage state={state} streams={streams} onChooseLabel={setVisionOverride} />} />
+        <Route path="/vision" element={<VisionPage state={state} streams={streams} onChooseCandidate={setVisionOverride} />} />
           <Route path="/tactile" element={<TactilePage state={state} />} />
           <Route path="/logs" element={<LogsPage state={state} interventionState={interventionState} visibleBackendEvents={visibleBackendEvents} frontendEvents={frontendEvents} onClear={handleClearLogs} onExport={handleExportLogs} />} />
         </Routes>

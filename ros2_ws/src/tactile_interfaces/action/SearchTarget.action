@@ -1,0 +1,26 @@
+TaskGoal goal
+string strategy
+float32 time_budget_sec
+int32 min_lock_frames
+float32 min_grounding_confidence
+bool stop_on_candidate_visible
+bool require_affordance_ready
+---
+bool success
+string status_code
+int32 track_id
+int32[] bbox_xyxy
+int32[] point_px
+float32 grounding_confidence
+AffordanceGroundingResult grounding
+string message
+---
+string phase
+bool candidate_visible
+bool target_locked
+int32 track_id
+int32 stable_lock_frames
+int32[] bbox_xyxy
+int32[] point_px
+float32 grounding_confidence
+float32 elapsed_sec

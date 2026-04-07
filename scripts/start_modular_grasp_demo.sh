@@ -16,6 +16,7 @@ CONTACT_GRASPNET_LOG_PATH="${CONTACT_GRASPNET_LOG_PATH:-${LOG_DIR}/contact_grasp
 CONTACT_GRASPNET_REQUEST_LOG_DIR="${CONTACT_GRASPNET_REQUEST_LOG_DIR:-${LOG_DIR}/contact_graspnet_requests}"
 MODULAR_GRASP_SHADOW_ONLY="${MODULAR_GRASP_SHADOW_ONLY:-0}"
 MODULAR_GRASP_SHADOW_IMAGE_VIEW="${MODULAR_GRASP_SHADOW_IMAGE_VIEW:-0}"
+MODULAR_GRASP_SKIP_QWEN_START="${MODULAR_GRASP_SKIP_QWEN_START:-0}"
 
 mkdir -p "${LOG_DIR}"
 mkdir -p "${CONTACT_GRASPNET_REQUEST_LOG_DIR}"
@@ -105,8 +106,13 @@ ensure_contact_graspnet_service() {
   echo "[start] Contact-GraspNet request logs: ${CONTACT_GRASPNET_REQUEST_LOG_DIR}"
 }
 
-echo "[start] Ensuring Qwen semantic service is ready on http://${QWEN_HOST}:${QWEN_PORT}"
-"${REPO_ROOT}/scripts/start_qwen_vllm.sh"
+if [[ "${MODULAR_GRASP_SKIP_QWEN_START}" == "1" ]]; then
+  echo "[start] Skipping local Qwen vLLM startup"
+  echo "[start] Expectation: a compatible model endpoint is already available, or semantic tasks will be published manually"
+else
+  echo "[start] Ensuring Qwen semantic service is ready on http://${QWEN_HOST}:${QWEN_PORT}"
+  "${REPO_ROOT}/scripts/start_qwen_vllm.sh"
+fi
 
 launch_args=("$@")
 if [[ "${MODULAR_GRASP_SHADOW_ONLY}" == "1" ]]; then

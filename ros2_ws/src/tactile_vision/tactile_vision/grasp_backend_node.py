@@ -4,9 +4,13 @@ import copy
 import importlib
 import json
 import math
+import os
+import subprocess
 import sys
+import tempfile
 import threading
 import time
+from collections import deque
 from pathlib import Path
 from typing import Any, Optional
 
@@ -81,6 +85,26 @@ def normalize_vector(vector: np.ndarray) -> np.ndarray:
     return values / length
 
 
+def build_pair_line_cloud(
+    contact_point_1: np.ndarray,
+    contact_point_2: np.ndarray,
+    *,
+    samples_per_pair: int,
+) -> np.ndarray:
+    points_1 = np.asarray(contact_point_1, dtype=np.float32).reshape((-1, 3))
+    points_2 = np.asarray(contact_point_2, dtype=np.float32).reshape((-1, 3))
+    pair_count = min(points_1.shape[0], points_2.shape[0])
+    if pair_count <= 0:
+        return np.empty((0, 3), dtype=np.float32)
+
+    sample_count = max(2, int(samples_per_pair))
+    interpolation = np.linspace(0.0, 1.0, sample_count, dtype=np.float32).reshape((1, -1, 1))
+    start = points_1[:pair_count].reshape((pair_count, 1, 3))
+    end = points_2[:pair_count].reshape((pair_count, 1, 3))
+    line_points = start + (end - start) * interpolation
+    return line_points.reshape((-1, 3)).astype(np.float32)
+
+
 def make_color(r: float, g: float, b: float, a: float) -> ColorRGBA:
     color = ColorRGBA()
     color.r = float(r)
@@ -96,6 +120,12 @@ def make_point_xyz(values: np.ndarray) -> Point:
     point.y = float(values[1])
     point.z = float(values[2])
     return point
+
+
+def ros_stamp_to_sec(stamp: Any) -> float:
+    sec = int(getattr(stamp, "sec", 0) or 0)
+    nanosec = int(getattr(stamp, "nanosec", 0) or 0)
+    return float(sec) + float(nanosec) * 1e-9
 
 
 def rotation_matrix_to_quaternion_xyzw(rotation: np.ndarray) -> list[float]:
@@ -162,6 +192,15 @@ class GraspBackendNode(Node):
         self.declare_parameter(
             "selected_grasp_center_topic", "/grasp/selected_grasp_center_cloud"
         )
+        self.declare_parameter("topk_cloud_topic", "/grasp/topk_cloud")
+        self.declare_parameter(
+            "topk_contact_point_1_topic", "/grasp/topk_contact_point_1_cloud"
+        )
+        self.declare_parameter(
+            "topk_contact_point_2_topic", "/grasp/topk_contact_point_2_cloud"
+        )
+        self.declare_parameter("topk_visual_limit", 10)
+        self.declare_parameter("topk_line_samples_per_pair", 20)
         self.declare_parameter("ggcnn_depth_roi_topic", "/grasp/ggcnn/depth_roi")
         self.declare_parameter("ggcnn_q_heatmap_topic", "/grasp/ggcnn/q_heatmap")
         self.declare_parameter("ggcnn_angle_map_topic", "/grasp/ggcnn/angle_map")
@@ -208,6 +247,24 @@ class GraspBackendNode(Node):
         self.declare_parameter("ggcnn_pregrasp_offset_m", 0.06)
         self.declare_parameter("ggcnn_mask_dilation_px", 6)
         self.declare_parameter("ggcnn_allow_bbox_depth_fallback", True)
+        self.declare_parameter("ggcnn_mask_context_hold_sec", 2.5)
+        self.declare_parameter("ggcnn_depth_sync_tolerance_sec", 0.20)
+        self.declare_parameter("ggcnn_depth_history_sec", 3.0)
+        self.declare_parameter("ggcnn_mask_reuse_min_bbox_iou", 0.15)
+        self.declare_parameter("graspgen_python", "/home/whispers/GraspGen/.venv/bin/python")
+        self.declare_parameter("graspgen_repo_root", "/home/whispers/GraspGen")
+        self.declare_parameter("graspgen_host", "127.0.0.1")
+        self.declare_parameter("graspgen_port", 5556)
+        self.declare_parameter("graspgen_gripper_config", "")
+        self.declare_parameter("graspgen_num_grasps", 200)
+        self.declare_parameter("graspgen_topk_num_grasps", 20)
+        self.declare_parameter("graspgen_grasp_threshold", -1.0)
+        self.declare_parameter("graspgen_min_grasps", 40)
+        self.declare_parameter("graspgen_max_tries", 6)
+        self.declare_parameter("graspgen_remove_outliers", False)
+        self.declare_parameter("graspgen_max_gripper_width_m", 0.06)
+        self.declare_parameter("graspgen_pregrasp_offset_m", 0.06)
+        self.declare_parameter("graspgen_subprocess_timeout_sec", 20.0)
         self.declare_parameter("visual_republish_rate_hz", 8.0)
         self.declare_parameter("log_interval_sec", 8.0)
         self.declare_parameter("execution_cache_hold_sec", 20.0)
@@ -232,6 +289,17 @@ class GraspBackendNode(Node):
         )
         self.selected_grasp_center_topic = str(
             self.get_parameter("selected_grasp_center_topic").value
+        )
+        self.topk_cloud_topic = str(self.get_parameter("topk_cloud_topic").value)
+        self.topk_contact_point_1_topic = str(
+            self.get_parameter("topk_contact_point_1_topic").value
+        )
+        self.topk_contact_point_2_topic = str(
+            self.get_parameter("topk_contact_point_2_topic").value
+        )
+        self.topk_visual_limit = max(1, int(self.get_parameter("topk_visual_limit").value))
+        self.topk_line_samples_per_pair = max(
+            2, int(self.get_parameter("topk_line_samples_per_pair").value)
         )
         self.ggcnn_depth_roi_topic = str(self.get_parameter("ggcnn_depth_roi_topic").value)
         self.ggcnn_q_heatmap_topic = str(self.get_parameter("ggcnn_q_heatmap_topic").value)
@@ -336,6 +404,63 @@ class GraspBackendNode(Node):
         self.ggcnn_allow_bbox_depth_fallback = bool(
             self.get_parameter("ggcnn_allow_bbox_depth_fallback").value
         )
+        self.ggcnn_mask_context_hold_sec = max(
+            0.1, float(self.get_parameter("ggcnn_mask_context_hold_sec").value)
+        )
+        self.ggcnn_depth_sync_tolerance_sec = max(
+            0.01, float(self.get_parameter("ggcnn_depth_sync_tolerance_sec").value)
+        )
+        self.ggcnn_depth_history_sec = max(
+            self.ggcnn_depth_sync_tolerance_sec,
+            float(self.get_parameter("ggcnn_depth_history_sec").value),
+        )
+        self.ggcnn_mask_reuse_min_bbox_iou = max(
+            0.0, min(1.0, float(self.get_parameter("ggcnn_mask_reuse_min_bbox_iou").value))
+        )
+        self.graspgen_python = Path(
+            str(self.get_parameter("graspgen_python").value).strip()
+        ).expanduser()
+        self.graspgen_repo_root = Path(
+            str(self.get_parameter("graspgen_repo_root").value).strip()
+        ).expanduser()
+        self.graspgen_host = str(self.get_parameter("graspgen_host").value).strip() or "127.0.0.1"
+        self.graspgen_port = max(1, int(self.get_parameter("graspgen_port").value))
+        graspgen_gripper_config_raw = str(
+            self.get_parameter("graspgen_gripper_config").value
+        ).strip()
+        self.graspgen_gripper_config = (
+            Path(graspgen_gripper_config_raw).expanduser()
+            if graspgen_gripper_config_raw
+            else None
+        )
+        self.graspgen_num_grasps = max(
+            1, int(self.get_parameter("graspgen_num_grasps").value)
+        )
+        self.graspgen_topk_num_grasps = max(
+            1, int(self.get_parameter("graspgen_topk_num_grasps").value)
+        )
+        self.graspgen_grasp_threshold = float(
+            self.get_parameter("graspgen_grasp_threshold").value
+        )
+        self.graspgen_min_grasps = max(
+            1, int(self.get_parameter("graspgen_min_grasps").value)
+        )
+        self.graspgen_max_tries = max(
+            1, int(self.get_parameter("graspgen_max_tries").value)
+        )
+        self.graspgen_remove_outliers = bool(
+            self.get_parameter("graspgen_remove_outliers").value
+        )
+        self.graspgen_max_gripper_width_m = max(
+            0.01, float(self.get_parameter("graspgen_max_gripper_width_m").value)
+        )
+        self.graspgen_pregrasp_offset_m = max(
+            0.01, float(self.get_parameter("graspgen_pregrasp_offset_m").value)
+        )
+        self.graspgen_subprocess_timeout_sec = max(
+            self.request_timeout_sec + 1.0,
+            float(self.get_parameter("graspgen_subprocess_timeout_sec").value),
+        )
         self.visual_republish_rate_hz = max(
             0.2, float(self.get_parameter("visual_republish_rate_hz").value)
         )
@@ -353,8 +478,11 @@ class GraspBackendNode(Node):
         self._latest_target_cloud_ts = 0.0
         self._latest_detection: Optional[DetectionResult] = None
         self._latest_detection_ts = 0.0
+        self._latest_masked_detection: Optional[DetectionResult] = None
+        self._latest_masked_detection_ts = 0.0
         self._latest_depth_msg: Optional[Image] = None
         self._latest_depth_ts = 0.0
+        self._recent_depth_msgs: deque[tuple[float, float, Image]] = deque()
         self._latest_camera_info: Optional[CameraInfo] = None
         self._latest_camera_info_ts = 0.0
         self._target_locked = False
@@ -384,6 +512,7 @@ class GraspBackendNode(Node):
         self._ggcnn_model: Any = None
         self._ggcnn_post_process_output = None
         self._ggcnn_device_resolved = ""
+        self._graspgen_helper_script = Path(__file__).with_name("graspgen_backend_helper.py")
 
         qos_sensor = QoSProfile(
             history=HistoryPolicy.KEEP_LAST,
@@ -433,6 +562,15 @@ class GraspBackendNode(Node):
         self.selected_grasp_center_pub = self.create_publisher(
             PointCloud2, self.selected_grasp_center_topic, qos_latched
         )
+        self.topk_cloud_pub = self.create_publisher(
+            PointCloud2, self.topk_cloud_topic, qos_latched
+        )
+        self.topk_contact_point_1_pub = self.create_publisher(
+            PointCloud2, self.topk_contact_point_1_topic, qos_latched
+        )
+        self.topk_contact_point_2_pub = self.create_publisher(
+            PointCloud2, self.topk_contact_point_2_topic, qos_latched
+        )
         self.ggcnn_depth_roi_pub = self.create_publisher(Image, self.ggcnn_depth_roi_topic, qos_latched)
         self.ggcnn_q_heatmap_pub = self.create_publisher(Image, self.ggcnn_q_heatmap_topic, qos_latched)
         self.ggcnn_angle_map_pub = self.create_publisher(Image, self.ggcnn_angle_map_topic, qos_latched)
@@ -462,7 +600,11 @@ class GraspBackendNode(Node):
         with self._sensor_lock:
             self._latest_target_cloud = msg
             self._latest_target_cloud_ts = time.time()
-        if self._target_locked and not self._execution_active:
+        if (
+            self._target_locked or
+            self.backend in ("http_json", "graspgen_zmq") or
+            self._should_request_without_hard_lock()
+        ) and not self._execution_active:
             self._pending_request = True
             self._maybe_run_inference()
 
@@ -470,14 +612,23 @@ class GraspBackendNode(Node):
         with self._sensor_lock:
             self._latest_detection = msg
             self._latest_detection_ts = time.time()
+            if bool(msg.accepted) and bool(msg.has_bbox) and bool(msg.has_mask):
+                self._latest_masked_detection = copy.deepcopy(msg)
+                self._latest_masked_detection_ts = self._latest_detection_ts
         if (self._target_locked or self._should_request_without_hard_lock()) and not self._execution_active:
             self._pending_request = True
             self._maybe_run_inference()
 
     def _on_depth_image(self, msg: Image) -> None:
+        now_sec = time.time()
+        stamp_sec = ros_stamp_to_sec(msg.header.stamp) or now_sec
         with self._sensor_lock:
             self._latest_depth_msg = msg
-            self._latest_depth_ts = time.time()
+            self._latest_depth_ts = now_sec
+            self._recent_depth_msgs.append((stamp_sec, now_sec, msg))
+            cutoff_sec = stamp_sec - self.ggcnn_depth_history_sec
+            while self._recent_depth_msgs and self._recent_depth_msgs[0][0] < cutoff_sec:
+                self._recent_depth_msgs.popleft()
         if (self._target_locked or self._should_request_without_hard_lock()) and not self._execution_active:
             self._pending_request = True
             self._maybe_run_inference()
@@ -555,20 +706,27 @@ class GraspBackendNode(Node):
             )
             return
 
-        if self.backend in ("contact_graspnet_http", "ggcnn_local"):
+        if self.backend in ("contact_graspnet_http", "ggcnn_local", "graspgen_zmq"):
             if not self._target_locked and not self._should_request_without_hard_lock():
                 self._pending_request = False
                 return
-            if not self._detection_depth_camera_inputs_ready():
-                self._log_precheck_state(
-                    f"{self.backend} waiting for detection/depth/camera info"
-                )
-                return
             try:
                 if self.backend == "contact_graspnet_http":
+                    if not self._detection_depth_camera_inputs_ready():
+                        self._log_precheck_state(
+                            f"{self.backend} waiting for detection/depth/camera info"
+                        )
+                        return
                     signature = self._get_contact_graspnet_target_signature()
-                else:
+                elif self.backend == "ggcnn_local":
+                    if not self._detection_depth_camera_inputs_ready():
+                        self._log_precheck_state(
+                            f"{self.backend} waiting for detection/depth/camera info"
+                        )
+                        return
                     signature = self._get_ggcnn_target_signature()
+                else:
+                    signature = self._get_graspgen_target_signature()
             except Exception as exc:  # noqa: BLE001
                 self._log_precheck_state(f"{self.backend} precheck failed: {str(exc).strip()}")
                 return
@@ -627,6 +785,12 @@ class GraspBackendNode(Node):
                     depth_ts=depth_ts,
                     camera_info=camera_info,
                     camera_info_ts=camera_info_ts,
+                )
+            elif self.backend == "graspgen_zmq":
+                parsed = self._run_graspgen_zmq_backend(
+                    semantic_task=semantic_task,
+                    cloud_msg=target_cloud,
+                    cloud_ts=target_cloud_ts,
                 )
             else:
                 raise ValueError(f"unsupported grasp backend: {self.backend}")
@@ -765,6 +929,46 @@ class GraspBackendNode(Node):
         )
         return str(context["target_signature"])
 
+    def _get_graspgen_target_signature(self) -> str:
+        with self._sensor_lock:
+            cloud_msg = self._latest_target_cloud
+            cloud_ts = self._latest_target_cloud_ts
+        with self._semantic_lock:
+            semantic_task = copy.deepcopy(self._semantic_task)
+
+        if cloud_msg is None:
+            raise ValueError("missing target cloud for GraspGen backend")
+        if self.sensor_stale_sec > 0.0 and (time.time() - cloud_ts) > self.sensor_stale_sec:
+            raise ValueError("target cloud is stale for GraspGen backend")
+
+        points = point_cloud2_to_xyz_array(cloud_msg)
+        if points.shape[0] < self.min_points_required:
+            raise ValueError(
+                f"target cloud has too few points: {points.shape[0]} < {self.min_points_required}"
+            )
+        if points.shape[0] > self.max_points:
+            step = max(1, points.shape[0] // self.max_points)
+            points = points[::step][: self.max_points]
+
+        centroid = points.mean(axis=0)
+        span = points.max(axis=0) - points.min(axis=0)
+        bin_m = max(0.001, float(self.request_signature_depth_bin_m))
+        count_bin = max(1, self.min_points_required // 2)
+
+        return compact_json(
+            {
+                "frame_id": str(cloud_msg.header.frame_id or self.target_frame),
+                "target_label": (
+                    semantic_task.target_label if semantic_task is not None else ""
+                ),
+                "task": semantic_task.task if semantic_task is not None else "",
+                "constraints": list(semantic_task.constraints) if semantic_task is not None else [],
+                "count_bin": int(points.shape[0] // count_bin),
+                "centroid_bin": [int(round(float(value) / bin_m)) for value in centroid],
+                "span_bin": [int(round(float(value) / bin_m)) for value in span],
+            }
+        )
+
     def _run_ggcnn_local_backend(
         self,
         *,
@@ -845,6 +1049,8 @@ class GraspBackendNode(Node):
         self.get_logger().info(
             "grasp backend decision: "
             f"backend=ggcnn_local target={target_label} "
+            f"detection_source={str(context.get('detection_source', 'unknown'))} "
+            f"sync_delta={float(context.get('detection_depth_sync_delta_sec', 0.0)):.3f}s "
             f"roi={int(context['roi_xyxy'][2] - context['roi_xyxy'][0])}x{int(context['roi_xyxy'][3] - context['roi_xyxy'][1])} "
             f"mask_pixels={int(context['roi_mask_pixels'])} "
             f"mask_mode={str(context['roi_mask_mode'])} "
@@ -864,8 +1070,145 @@ class GraspBackendNode(Node):
                 "roi_xyxy": list(context["roi_xyxy"]),
                 "roi_mask_mode": str(context["roi_mask_mode"]),
                 "target_signature": str(context["target_signature"]),
+                "detection_source": str(context.get("detection_source", "")),
+                "detection_depth_sync_delta_sec": float(
+                    context.get("detection_depth_sync_delta_sec", 0.0)
+                ),
             },
         }
+
+    def _run_graspgen_zmq_backend(
+        self,
+        *,
+        semantic_task: Optional[SemanticTask],
+        cloud_msg: Optional[PointCloud2],
+        cloud_ts: float,
+    ) -> dict[str, Any]:
+        if cloud_msg is None:
+            raise ValueError("missing target cloud for GraspGen backend")
+        if self.sensor_stale_sec > 0.0 and (time.time() - cloud_ts) > self.sensor_stale_sec:
+            raise ValueError("target cloud is stale for GraspGen backend")
+        if not self._graspgen_helper_script.is_file():
+            raise ValueError(f"GraspGen helper script not found: {self._graspgen_helper_script}")
+        if not self.graspgen_python.is_file():
+            raise ValueError(f"GraspGen Python interpreter not found: {self.graspgen_python}")
+        if not self.graspgen_repo_root.is_dir():
+            raise ValueError(f"GraspGen repo root not found: {self.graspgen_repo_root}")
+
+        points = point_cloud2_to_xyz_array(cloud_msg)
+        if points.shape[0] < self.min_points_required:
+            raise ValueError(
+                f"target cloud has too few points: {points.shape[0]} < {self.min_points_required}"
+            )
+        if points.shape[0] > self.max_points:
+            step = max(1, points.shape[0] // self.max_points)
+            points = points[::step][: self.max_points]
+
+        frame_id = str(cloud_msg.header.frame_id or self.target_frame).strip() or self.target_frame
+        with tempfile.TemporaryDirectory(prefix="programme_graspgen_backend_") as temp_dir:
+            temp_root = Path(temp_dir)
+            cloud_path = temp_root / "target_cloud.npy"
+            json_path = temp_root / "proposals.json"
+            np.save(cloud_path, points.astype(np.float32))
+
+            cmd = [
+                str(self.graspgen_python),
+                str(self._graspgen_helper_script),
+                "--repo-root",
+                str(self.graspgen_repo_root),
+                "--cloud-npy",
+                str(cloud_path),
+                "--out-json",
+                str(json_path),
+                "--frame-id",
+                frame_id,
+                "--host",
+                self.graspgen_host,
+                "--port",
+                str(self.graspgen_port),
+                "--timeout-sec",
+                str(self.request_timeout_sec),
+                "--num-grasps",
+                str(self.graspgen_num_grasps),
+                "--topk-num-grasps",
+                str(self.graspgen_topk_num_grasps),
+                "--grasp-threshold",
+                str(self.graspgen_grasp_threshold),
+                "--min-grasps",
+                str(self.graspgen_min_grasps),
+                "--max-tries",
+                str(self.graspgen_max_tries),
+                "--max-gripper-width-m",
+                str(self.graspgen_max_gripper_width_m),
+                "--pregrasp-offset-m",
+                str(self.graspgen_pregrasp_offset_m),
+                "--task-constraint-tag",
+                self.default_task_constraint_tag,
+            ]
+            if self.graspgen_gripper_config is not None:
+                cmd.extend(["--gripper-config", str(self.graspgen_gripper_config)])
+            if self.graspgen_remove_outliers:
+                cmd.append("--remove-outliers")
+
+            started = time.perf_counter()
+            env = os.environ.copy()
+            env.pop("PYTHONHOME", None)
+            env.pop("PYTHONPATH", None)
+            env["VIRTUAL_ENV"] = str(self.graspgen_python.parent.parent)
+            env["PATH"] = f"{self.graspgen_python.parent}:{env.get('PATH', '')}"
+            completed = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=self.graspgen_subprocess_timeout_sec,
+                check=False,
+                env=env,
+            )
+            helper_sec = time.perf_counter() - started
+            if completed.returncode != 0:
+                detail = (completed.stderr or completed.stdout or "").strip()
+                if detail:
+                    detail = detail.splitlines()[-1].strip()
+                raise ValueError(
+                    f"GraspGen helper failed: {detail or f'exit code {completed.returncode}'}"
+                )
+            if not json_path.is_file():
+                raise ValueError("GraspGen helper did not produce proposal JSON")
+
+            try:
+                with json_path.open("r", encoding="utf-8") as handle:
+                    parsed = json.load(handle)
+            except Exception as exc:  # noqa: BLE001
+                raise ValueError(f"failed to parse GraspGen helper output: {exc}") from exc
+
+        if not isinstance(parsed, dict):
+            raise ValueError("GraspGen helper output is not a JSON object")
+
+        debug = parsed.get("debug")
+        if isinstance(debug, dict):
+            debug["helper_sec"] = helper_sec
+            debug["target_signature"] = self._get_graspgen_target_signature()
+
+        selected_index = int(parsed.get("selected_index", 0))
+        proposals = parsed.get("proposals", [])
+        selected_score = 0.0
+        if isinstance(proposals, list) and 0 <= selected_index < len(proposals):
+            try:
+                selected_score = float(proposals[selected_index].get("confidence_score", 0.0))
+            except Exception:
+                selected_score = 0.0
+        target_label = (
+            semantic_task.target_label if semantic_task is not None else ""
+        ).strip() or "unknown"
+        self.get_logger().info(
+            "grasp backend decision: "
+            f"backend=graspgen_zmq target={target_label} "
+            f"input_points={points.shape[0]} "
+            f"proposals={len(proposals) if isinstance(proposals, list) else 0} "
+            f"top_score={selected_score:.3f} "
+            f"helper_sec={helper_sec:.4f}"
+        )
+        return parsed
 
     def _ensure_ggcnn_model_loaded(self):
         with self._ggcnn_lock:
@@ -934,6 +1277,176 @@ class GraspBackendNode(Node):
             )
             return model, self._ggcnn_post_process_output, requested_device, torch_mod
 
+    def _detection_bbox_xyxy(
+        self,
+        detection: Optional[DetectionResult],
+    ) -> Optional[tuple[int, int, int, int]]:
+        if detection is None or not bool(detection.has_bbox):
+            return None
+        width = int(detection.bbox.width)
+        height = int(detection.bbox.height)
+        if width <= 0 or height <= 0:
+            return None
+        x0 = int(detection.bbox.x_offset)
+        y0 = int(detection.bbox.y_offset)
+        return (x0, y0, x0 + width, y0 + height)
+
+    def _bbox_iou_xyxy(
+        self,
+        lhs: Optional[tuple[int, int, int, int]],
+        rhs: Optional[tuple[int, int, int, int]],
+    ) -> float:
+        if lhs is None or rhs is None:
+            return 0.0
+        ax0, ay0, ax1, ay1 = lhs
+        bx0, by0, bx1, by1 = rhs
+        inter_x0 = max(ax0, bx0)
+        inter_y0 = max(ay0, by0)
+        inter_x1 = min(ax1, bx1)
+        inter_y1 = min(ay1, by1)
+        inter_w = max(0, inter_x1 - inter_x0)
+        inter_h = max(0, inter_y1 - inter_y0)
+        inter_area = float(inter_w * inter_h)
+        if inter_area <= 0.0:
+            return 0.0
+        lhs_area = float(max(0, ax1 - ax0) * max(0, ay1 - ay0))
+        rhs_area = float(max(0, bx1 - bx0) * max(0, by1 - by0))
+        denom = lhs_area + rhs_area - inter_area
+        if denom <= 0.0:
+            return 0.0
+        return inter_area / denom
+
+    def _normalized_detection_label(self, detection: Optional[DetectionResult]) -> str:
+        return str(getattr(detection, "target_label", "") or "").strip().lower()
+
+    def _can_reuse_masked_detection(
+        self,
+        primary_detection: Optional[DetectionResult],
+        cached_masked_detection: Optional[DetectionResult],
+        cached_masked_detection_ts: float,
+    ) -> bool:
+        if cached_masked_detection is None:
+            return False
+        if not bool(cached_masked_detection.accepted) or not bool(cached_masked_detection.has_mask):
+            return False
+        if self._detection_bbox_xyxy(cached_masked_detection) is None:
+            return False
+        if (time.time() - float(cached_masked_detection_ts or 0.0)) > self.ggcnn_mask_context_hold_sec:
+            return False
+        if primary_detection is None:
+            return True
+        primary_bbox = self._detection_bbox_xyxy(primary_detection)
+        if primary_bbox is None:
+            return True
+        if (
+            str(primary_detection.header.frame_id or "").strip()
+            and str(cached_masked_detection.header.frame_id or "").strip()
+            and str(primary_detection.header.frame_id or "").strip()
+            != str(cached_masked_detection.header.frame_id or "").strip()
+        ):
+            return False
+        primary_label = self._normalized_detection_label(primary_detection)
+        cached_label = self._normalized_detection_label(cached_masked_detection)
+        if primary_label and cached_label and primary_label != cached_label:
+            return False
+        bbox_iou = self._bbox_iou_xyxy(
+            primary_bbox,
+            self._detection_bbox_xyxy(cached_masked_detection),
+        )
+        return bbox_iou >= self.ggcnn_mask_reuse_min_bbox_iou
+
+    def _select_depth_frame_for_stamp(
+        self,
+        desired_stamp_sec: float,
+        latest_depth_msg: Optional[Image],
+        latest_depth_ts: float,
+    ) -> tuple[Optional[Image], float, float]:
+        with self._sensor_lock:
+            depth_history = list(self._recent_depth_msgs)
+        if latest_depth_msg is not None and not depth_history:
+            return latest_depth_msg, latest_depth_ts, 0.0
+        if desired_stamp_sec <= 0.0:
+            return latest_depth_msg, latest_depth_ts, 0.0
+
+        best_msg: Optional[Image] = None
+        best_arrival_ts = 0.0
+        best_delta = float("inf")
+        for candidate_stamp_sec, candidate_arrival_ts, candidate_msg in depth_history:
+            delta = abs(float(candidate_stamp_sec) - desired_stamp_sec)
+            if delta < best_delta:
+                best_delta = delta
+                best_msg = candidate_msg
+                best_arrival_ts = candidate_arrival_ts
+        if best_msg is None and latest_depth_msg is not None:
+            latest_stamp_sec = ros_stamp_to_sec(latest_depth_msg.header.stamp) or latest_depth_ts
+            best_delta = abs(float(latest_stamp_sec) - desired_stamp_sec)
+            best_msg = latest_depth_msg
+            best_arrival_ts = latest_depth_ts
+        if best_msg is None:
+            return None, 0.0, float("inf")
+        return best_msg, best_arrival_ts, best_delta
+
+    def _select_ggcnn_detection_and_depth(
+        self,
+        *,
+        detection: Optional[DetectionResult],
+        detection_ts: float,
+        depth_msg: Optional[Image],
+        depth_ts: float,
+    ) -> tuple[DetectionResult, float, Image, float, str, float]:
+        with self._sensor_lock:
+            cached_masked_detection = copy.deepcopy(self._latest_masked_detection)
+            cached_masked_detection_ts = self._latest_masked_detection_ts
+
+        selected_detection = detection
+        selected_detection_ts = detection_ts
+        detection_source = "latest_detection"
+        if (
+            selected_detection is None
+            or not bool(selected_detection.accepted)
+            or self._detection_bbox_xyxy(selected_detection) is None
+            or not bool(selected_detection.has_mask)
+        ):
+            if self._can_reuse_masked_detection(
+                detection,
+                cached_masked_detection,
+                cached_masked_detection_ts,
+            ):
+                selected_detection = cached_masked_detection
+                selected_detection_ts = cached_masked_detection_ts
+                detection_source = "cached_masked_detection"
+
+        if (
+            selected_detection is None
+            or not bool(selected_detection.accepted)
+            or self._detection_bbox_xyxy(selected_detection) is None
+        ):
+            raise ValueError("waiting for accepted GG-CNN detection context")
+        if not bool(selected_detection.has_mask):
+            raise ValueError("waiting for masked detection context for GG-CNN")
+
+        detection_stamp_sec = ros_stamp_to_sec(selected_detection.header.stamp)
+        selected_depth_msg, selected_depth_ts, sync_delta_sec = self._select_depth_frame_for_stamp(
+            detection_stamp_sec,
+            depth_msg,
+            depth_ts,
+        )
+        if selected_depth_msg is None:
+            raise ValueError("missing depth frame for GG-CNN")
+        if detection_stamp_sec > 0.0 and sync_delta_sec > self.ggcnn_depth_sync_tolerance_sec:
+            raise ValueError(
+                "detection-depth timestamp mismatch for GG-CNN: "
+                f"delta={sync_delta_sec:.3f}s > {self.ggcnn_depth_sync_tolerance_sec:.3f}s"
+            )
+        return (
+            selected_detection,
+            selected_detection_ts,
+            selected_depth_msg,
+            selected_depth_ts,
+            detection_source,
+            sync_delta_sec,
+        )
+
     def _extract_ggcnn_context(
         self,
         *,
@@ -944,8 +1457,16 @@ class GraspBackendNode(Node):
         camera_info: Optional[CameraInfo],
         camera_info_ts: float,
     ) -> dict[str, Any]:
-        if detection is None or depth_msg is None or camera_info is None:
+        if camera_info is None:
             raise ValueError("missing detection/depth/camera info for GG-CNN backend")
+        detection, detection_ts, depth_msg, depth_ts, detection_source, sync_delta_sec = (
+            self._select_ggcnn_detection_and_depth(
+                detection=detection,
+                detection_ts=detection_ts,
+                depth_msg=depth_msg,
+                depth_ts=depth_ts,
+            )
+        )
         now = time.time()
         if self.sensor_stale_sec > 0.0:
             if now - detection_ts > self.sensor_stale_sec:
@@ -1045,6 +1566,7 @@ class GraspBackendNode(Node):
             "frame_id": self.target_frame,
             "source_frame": source_frame,
             "stamp": depth_msg.header.stamp,
+            "detection_stamp": detection.header.stamp,
             "target_signature": target_signature,
             "depth_image": depth_image,
             "mask_image": mask_image,
@@ -1064,6 +1586,8 @@ class GraspBackendNode(Node):
             "target_depth_m": target_depth_m,
             "rotation": rotation,
             "translation": translation,
+            "detection_source": detection_source,
+            "detection_depth_sync_delta_sec": sync_delta_sec,
         }
 
     def _build_detection_mask(
@@ -1974,6 +2498,11 @@ class GraspBackendNode(Node):
             stamp=stamp,
             proposal=proposal_array.proposals[selected_index] if proposal_array.proposals else None,
         )
+        self._publish_topk_debug_clouds(
+            frame_id=frame_id,
+            stamp=stamp,
+            proposals=list(proposal_array.proposals),
+        )
 
         marker_array = MarkerArray()
         active_marker_ids: set[int] = set()
@@ -2039,6 +2568,39 @@ class GraspBackendNode(Node):
         self.selected_grasp_center_pub.publish(
             make_xyz_cloud(point_to_numpy(proposal.grasp_center).reshape((1, 3)), frame_id, stamp)
         )
+
+    def _publish_topk_debug_clouds(
+        self,
+        *,
+        frame_id: str,
+        stamp,
+        proposals: list[GraspProposal],
+    ) -> None:
+        empty_cloud = make_xyz_cloud(np.empty((0, 3), dtype=np.float32), frame_id, stamp)
+        if not proposals:
+            self.topk_cloud_pub.publish(empty_cloud)
+            self.topk_contact_point_1_pub.publish(empty_cloud)
+            self.topk_contact_point_2_pub.publish(empty_cloud)
+            return
+
+        topk_proposals = list(proposals[: self.topk_visual_limit])
+        contact_point_1 = np.asarray(
+            [point_to_numpy(proposal.contact_point_1) for proposal in topk_proposals],
+            dtype=np.float32,
+        ).reshape((-1, 3))
+        contact_point_2 = np.asarray(
+            [point_to_numpy(proposal.contact_point_2) for proposal in topk_proposals],
+            dtype=np.float32,
+        ).reshape((-1, 3))
+        line_points = build_pair_line_cloud(
+            contact_point_1,
+            contact_point_2,
+            samples_per_pair=self.topk_line_samples_per_pair,
+        )
+
+        self.topk_cloud_pub.publish(make_xyz_cloud(line_points, frame_id, stamp))
+        self.topk_contact_point_1_pub.publish(make_xyz_cloud(contact_point_1, frame_id, stamp))
+        self.topk_contact_point_2_pub.publish(make_xyz_cloud(contact_point_2, frame_id, stamp))
 
     def _build_candidate_markers(
         self,

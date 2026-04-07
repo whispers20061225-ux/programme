@@ -7,7 +7,9 @@ from typing import List, Optional, Tuple
 
 import rclpy
 from rclpy.callback_groups import ReentrantCallbackGroup
+from rclpy.duration import Duration
 from rclpy.executors import MultiThreadedExecutor
+from rclpy.exceptions import ParameterUninitializedException
 from rclpy.node import Node
 from rclpy.parameter import Parameter
 from rclpy.qos import HistoryPolicy, QoSProfile, ReliabilityPolicy
@@ -227,7 +229,10 @@ class ArmSimDriverNode(Node):
         )
 
     def _parse_float_list_param(self, name: str) -> List[float]:
-        raw = self.get_parameter(name).value
+        try:
+            raw = self.get_parameter(name).value
+        except ParameterUninitializedException:
+            return []
         if raw is None or not isinstance(raw, (list, tuple)):
             return []
 
@@ -240,7 +245,10 @@ class ArmSimDriverNode(Node):
         return values
 
     def _parse_string_list_param(self, name: str) -> List[str]:
-        raw = self.get_parameter(name).value
+        try:
+            raw = self.get_parameter(name).value
+        except ParameterUninitializedException:
+            return []
         if raw is None or not isinstance(raw, (list, tuple)):
             return []
         values: List[str] = []
@@ -340,6 +348,32 @@ class ArmSimDriverNode(Node):
             time.sleep(0.01)
         return False
 
+    def _wait_ros2_target_reached(self, timeout_sec: float, tolerance_deg: float = 1.0) -> bool:
+        deadline = time.time() + max(0.1, timeout_sec)
+        while time.time() < deadline:
+            with self._state_lock:
+                target = list(self._target_angles)
+                current = list(self._joint_angles)
+                moving = bool(self._moving)
+                joint_state_ts = float(self._joint_state_received_ts)
+
+            if joint_state_ts > 0.0 and all(
+                abs(current_angle - target_angle) <= tolerance_deg
+                for current_angle, target_angle in zip(current, target)
+            ):
+                with self._state_lock:
+                    self._moving = False
+                return True
+
+            if not moving and joint_state_ts > 0.0:
+                return all(
+                    abs(current_angle - target_angle) <= tolerance_deg
+                    for current_angle, target_angle in zip(current, target)
+                )
+
+            time.sleep(0.02)
+        return False
+
     def _on_joint_state(self, msg: JointState) -> None:
         if not msg.name or not msg.position:
             return
@@ -417,6 +451,7 @@ class ArmSimDriverNode(Node):
         point.positions = [math.radians(float(v)) for v in target_model_angles_deg]
         point.time_from_start.sec = int(sec)
         point.time_from_start.nanosec = int(nanosec)
+        goal.trajectory.header.stamp = (self.get_clock().now() + Duration(seconds=0.2)).to_msg()
         goal.trajectory.points = [point]
 
         with self._state_lock:
@@ -443,32 +478,32 @@ class ArmSimDriverNode(Node):
         if not wait:
             return True, "trajectory goal accepted"
 
-        result_future = goal_handle.get_result_async()
-        wrapped, error = self._wait_for_future(
-            result_future,
-            timeout_sec=max(self.trajectory_result_timeout_sec, duration_ms / 1000.0 + 1.0),
-        )
-        if wrapped is None:
+        execution_timeout_sec = max(self.trajectory_result_timeout_sec, duration_ms / 1000.0 + 1.0)
+        reached = self._wait_ros2_target_reached(execution_timeout_sec)
+        if reached:
             with self._state_lock:
-                self._error = True
-                self._error_message = f"trajectory result wait failed: {error}"
+                self._error = False
+                self._error_message = ""
                 self._moving = False
-            return False, self._error_message
-        if wrapped is None:
-            return False, "trajectory result unavailable"
+            return True, "trajectory completed"
 
-        result = wrapped.result
-        if result.error_code != 0:
-            detail = result.error_string or f"error_code={result.error_code}"
-            with self._state_lock:
-                self._error = True
-                self._error_message = f"trajectory failed: {detail}"
-                self._moving = False
-            return False, f"trajectory failed: {detail}"
+        result_future = goal_handle.get_result_async()
+        wrapped, error = self._wait_for_future(result_future, timeout_sec=1.0)
+        detail = ""
+        if wrapped is not None:
+            result = wrapped.result
+            if result.error_code != 0:
+                detail = result.error_string or f"error_code={result.error_code}"
+            else:
+                detail = "target not reached within tolerance"
+        else:
+            detail = error or "target not reached within tolerance"
 
         with self._state_lock:
+            self._error = True
+            self._error_message = f"trajectory execution failed: {detail}"
             self._moving = False
-        return True, "trajectory completed"
+        return False, self._error_message
 
     def _on_enable(self, request: SetBool.Request, response: SetBool.Response) -> SetBool.Response:
         if not bool(request.data):
@@ -764,3 +799,4 @@ def main(args=None) -> None:
 
 if __name__ == "__main__":
     main()
+

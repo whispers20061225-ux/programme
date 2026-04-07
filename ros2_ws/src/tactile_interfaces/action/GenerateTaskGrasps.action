@@ -1,0 +1,22 @@
+TaskGoal goal
+AffordanceGroundingResult grounding
+string backend
+int32 max_candidates
+bool strict_forbidden_mask
+bool strict_part_match
+float32 min_quality
+float32 min_affordance_score
+---
+bool success
+string status_code
+TaskGraspCandidate[] candidates
+int32 selected_candidate_id
+string rerank_debug_json
+string message
+---
+string phase
+int32 raw_candidate_count
+int32 filtered_candidate_count
+float32 best_quality
+float32 best_affordance_score
+float32 elapsed_sec

@@ -25,7 +25,10 @@ setup(
             "qwen_semantic_node = tactile_vision.qwen_semantic_node:main",
             "detector_seg_node = tactile_vision.detector_seg_node:main",
             "cloud_filter_node = tactile_vision.cloud_filter_node:main",
+            "primitive_fit_node = tactile_vision.primitive_fit_node:main",
+            "grasp_input_cloud_node = tactile_vision.grasp_input_cloud_node:main",
             "grasp_backend_node = tactile_vision.grasp_backend_node:main",
+            "graspgen_topk_bridge_node = tactile_vision.graspgen_topk_bridge_node:main",
         ],
     },
 )

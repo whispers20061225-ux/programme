@@ -200,6 +200,44 @@ class ArmControlNode(Node):
             return False, f"arm reports error: {state.error_message}"
         return True, ""
 
+    def _wait_arm_ready(self, timeout_sec: float) -> Tuple[bool, str]:
+        deadline = time.time() + max(0.2, float(timeout_sec))
+        last_message = (
+            "arm state not received (check arm_driver_node/arm_sim_driver_node and /arm/state)"
+        )
+        while time.time() < deadline:
+            ok, message = self._check_arm_ready()
+            if ok:
+                return True, ""
+            if message:
+                last_message = message
+            time.sleep(0.05)
+        return False, last_message
+
+    def _ensure_arm_ready(self) -> Tuple[bool, str]:
+        ok, message = self._check_arm_ready()
+        if ok:
+            return True, ""
+
+        req = SetBool.Request()
+        req.data = True
+        result, error = self._call_service_with_retries(self._enable_client, req)
+        if result is None:
+            return False, f"enable call failed: {error}"
+        if not bool(result.success):
+            return False, str(result.message or "enable failed")
+
+        with self._emergency_lock:
+            self._emergency_latched = False
+            self._emergency_reason = ""
+
+        ready_ok, ready_message = self._wait_arm_ready(
+            max(self.command_timeout_sec, self.arm_state_timeout_sec + 2.0)
+        )
+        if not ready_ok:
+            return False, ready_message
+        return True, ""
+
     def _validate_joint_id(self, joint_id: int) -> Tuple[bool, str]:
         if joint_id < 1 or joint_id > self.arm_num_joints:
             return False, f"joint_id {joint_id} out of range [1..{self.arm_num_joints}]"
@@ -248,7 +286,7 @@ class ArmControlNode(Node):
         if latched:
             return False, f"emergency latched: {reason}", joint_id, angle_deg
 
-        ok, message = self._check_arm_ready()
+        ok, message = self._ensure_arm_ready()
         if not ok:
             return False, message, joint_id, angle_deg
 
@@ -280,7 +318,7 @@ class ArmControlNode(Node):
         if latched:
             return False, f"emergency latched: {reason}", joint_ids, angles_deg
 
-        ok, message = self._check_arm_ready()
+        ok, message = self._ensure_arm_ready()
         if not ok:
             return False, message, joint_ids, angles_deg
 
@@ -330,9 +368,20 @@ class ArmControlNode(Node):
             with self._emergency_lock:
                 self._emergency_latched = False
                 self._emergency_reason = ""
+            ready_ok, ready_message = self._wait_arm_ready(
+                max(self.command_timeout_sec, self.arm_state_timeout_sec + 2.0)
+            )
+            if not ready_ok:
+                response.success = False
+                response.message = f"enable succeeded but arm not ready: {ready_message}"
         return response
 
     def _on_control_home(self, _: Trigger.Request, response: Trigger.Response) -> Trigger.Response:
+        ok, message = self._ensure_arm_ready()
+        if not ok:
+            response.success = False
+            response.message = message
+            return response
         result, error = self._call_service_with_retries(self._home_client, Trigger.Request())
         if result is None:
             response.success = False

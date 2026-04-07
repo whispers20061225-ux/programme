@@ -5,17 +5,17 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 WS_ROOT="$(cd -- "$SCRIPT_DIR/.." && pwd)"
 PROGRAMME_ROOT="$(cd -- "$WS_ROOT/.." && pwd)"
 LOG_DIR="$WS_ROOT/.runtime/programme-ui"
-ROS_LOG="$LOG_DIR/ros.log"
+BACKEND_PID_FILE="$LOG_DIR/backend.pid"
 FRONTEND_LOG="$LOG_DIR/frontend.log"
 QWEN_LOG="$LOG_DIR/qwen_vllm_server.log"
-ROS_PID_FILE="$LOG_DIR/ros.pid"
 FRONTEND_PID_FILE="$LOG_DIR/frontend.pid"
 QWEN_PID_FILE="$LOG_DIR/qwen_vllm_server.pid"
 QWEN_OWNED_MARKER="$LOG_DIR/qwen_vllm_owned"
-ROS_SESSION="programme-ui-ros"
 FRONTEND_SESSION="programme-ui-frontend"
-ROS_UNIT="programme-ui-ros.service"
+LEGACY_ROS_SESSION="programme-ui-ros"
 FRONTEND_UNIT="programme-ui-frontend.service"
+LEGACY_ROS_UNIT="programme-ui-ros.service"
+BACKEND_UNIT="programme-phase8-full.service"
 QWEN_START_SCRIPT="$PROGRAMME_ROOT/scripts/start_qwen_vllm.sh"
 QWEN_STOP_SCRIPT="$PROGRAMME_ROOT/scripts/stop_qwen_vllm.sh"
 QWEN_MODELS_URL="${QWEN_MODELS_URL:-http://127.0.0.1:8000/v1/models}"
@@ -71,7 +71,14 @@ ensure_user_linger() {
 }
 
 has_systemd_user() {
+  [[ "${PROGRAMME_WEB_UI_USE_SYSTEMD_USER:-0}" == "1" ]] || return 1
   command -v systemd-run >/dev/null 2>&1 && systemctl --user show-environment >/dev/null 2>&1
+}
+
+has_remote_vlm_config() {
+  local env_file="$HOME/.config/programme/remote_vlm.env"
+  [[ -f "$env_file" ]] || return 1
+  grep -Eq '^(export[[:space:]]+)?(PROGRAMME_DIALOG_API_KEY|PROGRAMME_REMOTE_VLM_API_KEY|DASHSCOPE_API_KEY|OPENAI_API_KEY)=' "$env_file"
 }
 
 stop_systemd_unit() {
@@ -147,6 +154,23 @@ start_component() {
   fi
 }
 
+restart_backend_service() {
+  if ! command -v systemctl >/dev/null 2>&1 || ! systemctl --user show-environment >/dev/null 2>&1; then
+    echo "[start] systemd user session is required to manage $BACKEND_UNIT"
+    exit 1
+  fi
+
+  systemctl --user daemon-reload >/dev/null 2>&1 || true
+  systemctl --user restart "$BACKEND_UNIT"
+  sleep 1
+  if ! systemctl --user is-active --quiet "$BACKEND_UNIT"; then
+    echo "[start] backend service failed to start: $BACKEND_UNIT"
+    systemctl --user status "$BACKEND_UNIT" --no-pager -l || true
+    exit 1
+  fi
+  systemctl --user show "$BACKEND_UNIT" -p MainPID --value | head -n 1 >"$BACKEND_PID_FILE" || true
+}
+
 wait_for_http() {
   local url="$1"
   local label="$2"
@@ -188,6 +212,11 @@ ensure_qwen_service() {
     return
   fi
 
+  if has_remote_vlm_config; then
+    echo "[start] remote VLM config detected; skipping local Qwen vLLM startup"
+    return
+  fi
+
   if [[ "$PROGRAMME_WEB_UI_START_QWEN_VLLM" != "1" ]]; then
     echo "[start] dialog model endpoint is offline and PROGRAMME_WEB_UI_START_QWEN_VLLM=0"
     exit 1
@@ -217,12 +246,13 @@ ensure_qwen_service() {
 }
 
 echo "[start] stopping stale Programme Web UI processes"
-kill_pid_file "$ROS_PID_FILE"
+kill_pid_file "$BACKEND_PID_FILE"
 kill_pid_file "$FRONTEND_PID_FILE"
 ensure_user_linger
-stop_systemd_unit "$ROS_UNIT"
+stop_systemd_unit "$BACKEND_UNIT"
+stop_systemd_unit "$LEGACY_ROS_UNIT"
 stop_systemd_unit "$FRONTEND_UNIT"
-kill_tmux_session "$ROS_SESSION"
+kill_tmux_session "$LEGACY_ROS_SESSION"
 kill_tmux_session "$FRONTEND_SESSION"
 "$SCRIPT_DIR/cleanup_sim_stack.sh" >/dev/null 2>&1 || true
 pkill -f "tactile_web_gateway" 2>/dev/null || true
@@ -233,10 +263,10 @@ ensure_python_deps
 ensure_qwen_service
 
 echo "[start] launching ROS gateway stack"
-start_component "$ROS_SESSION" "$ROS_UNIT" "$ROS_PID_FILE" "$ROS_LOG" ros
+restart_backend_service
 if ! wait_for_http "http://127.0.0.1:8765/api/bootstrap" "gateway" 60; then
   echo "[start] gateway failed to start; recent log:"
-  tail -n 120 "$ROS_LOG" || true
+  journalctl --user -u "$BACKEND_UNIT" -n 120 --no-pager || true
   exit 1
 fi
 
@@ -255,12 +285,10 @@ fi
 echo "[start] Programme Web UI is ready"
 echo "[start] control page: http://127.0.0.1:5173/control"
 echo "[start] gateway root: http://127.0.0.1:8765/"
-echo "[start] ros log: $ROS_LOG"
 echo "[start] frontend log: $FRONTEND_LOG"
 echo "[start] qwen log: $QWEN_LOG"
-echo "[start] ros pid: $(<"$ROS_PID_FILE")"
+echo "[start] backend pid: $(<"$BACKEND_PID_FILE")"
 echo "[start] frontend pid: $(<"$FRONTEND_PID_FILE")"
-echo "[start] ros session: $ROS_SESSION"
 echo "[start] frontend session: $FRONTEND_SESSION"
-echo "[start] ros unit: $ROS_UNIT"
+echo "[start] backend unit: $BACKEND_UNIT"
 echo "[start] frontend unit: $FRONTEND_UNIT"

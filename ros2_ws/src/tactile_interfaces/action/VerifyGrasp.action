@@ -1,0 +1,25 @@
+TaskGoal goal
+int32 candidate_id
+float32 stable_hold_sec
+bool require_width_change
+bool require_visual_lift
+bool require_tactile_contact
+bool require_no_slip
+---
+bool success
+string status_code
+float32 verification_score
+bool tactile_contact
+bool visual_object_in_gripper
+bool slip_detected
+float32 gripper_width_delta
+float32 object_lift_cm
+string recommended_recovery
+string message
+---
+string phase
+float32 gripper_width_delta
+float32 visual_hold_confidence
+float32 slip_score
+float32 object_lift_cm
+float32 elapsed_sec

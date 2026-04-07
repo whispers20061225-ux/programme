@@ -34,11 +34,25 @@ export function ControlPage(props: ControlPageProps) {
   const [promptInput, setPromptInput] = useState("");
   const targetValue = props.draft.target_label || props.draft.target_hint;
   const constraintsValue = props.draft.constraints.join(", ");
-  const currentMessage = readString(props.state.execution.pick_status, "message", "Waiting for semantic or vision updates.");
+  const pendingExecute = props.state.execution.pending_execute ?? {
+    active: false,
+    source: "",
+    message: "",
+    updated_at: 0,
+  };
+  const currentMessage = pendingExecute.active
+    ? pendingExecute.message || "Execute queued while waiting for target lock."
+    : readString(props.state.execution.pick_status, "message", "Waiting for semantic or vision updates.");
+  const executionPin = props.draft.target_instance?.track_id
+    ? `T${props.draft.target_instance.track_id}`
+    : props.draft.target_instance?.bbox_xyxy?.length === 4
+      ? "BBox Hint"
+      : "Semantic Only";
   const executeDisabled =
     props.busyAction !== null ||
+    !props.state.connection.backend_ready ||
     !targetValue.trim() ||
-    !props.state.execution.target_locked ||
+    pendingExecute.active ||
     props.state.execution.pick_active;
   const detectionPreviewBoxes = useMemo(() => {
     const selected = props.state.vision.selected_candidate;
@@ -69,7 +83,7 @@ export function ControlPage(props: ControlPageProps) {
     <div className="page-grid control-grid">
       <Panel
         title="Dialog Control"
-        subtitle="Multi-turn dialog updates the structured task in the backend session. Review mode stops at task drafting; Auto mode can queue execution when the instruction is clear."
+        subtitle="Multi-turn dialog updates the structured task in the backend session. Review mode stops at task drafting; Auto mode immediately starts execution once the instruction is clear."
         className="panel-tall"
       >
         <div className="status-row">
@@ -84,6 +98,9 @@ export function ControlPage(props: ControlPageProps) {
           </StatusPill>
           <StatusPill tone={props.dialogPendingAutoExecute ? "warn" : "neutral"}>
             {props.dialogPendingAutoExecute ? "Auto Queued" : props.dialogStatusLabel}
+          </StatusPill>
+          <StatusPill tone={pendingExecute.active ? "info" : "neutral"}>
+            {pendingExecute.active ? "Execute Queued" : "Manual Ready"}
           </StatusPill>
           {props.draftDirty ? <span data-testid="intervention-badge-draft"><StatusPill tone="warn">Manual Draft</StatusPill></span> : null}
           {!props.draftDirty && props.state.execution.intervention.active ? <span data-testid="intervention-badge-applied"><StatusPill tone="info">Override Applied</StatusPill></span> : null}
@@ -145,15 +162,17 @@ export function ControlPage(props: ControlPageProps) {
             value={promptInput}
             onChange={(event) => setPromptInput(event.currentTarget.value)}
             placeholder="Example: pick up the blue cup on the left with the parallel gripper. Then say: use the leftmost bottle instead."
-            disabled={props.busyAction !== null}
+            disabled={props.busyAction !== null || !props.state.connection.backend_ready}
           />
           <div className="button-row">
-            <button className="primary-button" data-testid="prompt-submit" type="submit" disabled={props.busyAction !== null || !promptInput.trim()}>
+            <button className="primary-button" data-testid="prompt-submit" type="submit" disabled={props.busyAction !== null || !props.state.connection.backend_ready || !promptInput.trim()}>
               {props.busyAction === "dialog" ? "Sending..." : "Send Message"}
             </button>
             <span className="inline-note">
-              {props.dialogMode === "auto"
-                ? "Auto mode updates the task and may queue execution once the target and instruction are clear."
+              {!props.state.connection.backend_ready
+                ? "Execution backend is still warming up. Wait for backend ready before sending the first command."
+                : props.dialogMode === "auto"
+                ? "Auto mode updates the task and immediately starts execution once the target and instruction are clear."
                 : "Review mode updates the task only. Execution still requires the Execute button."}
             </span>
           </div>
@@ -195,12 +214,13 @@ export function ControlPage(props: ControlPageProps) {
           <div className="metric-grid compact">
             <div className="metric-card"><span className="metric-label">Current Phase</span><strong>{phaseLabel(props.state.execution.phase)}</strong></div>
             <div className="metric-card"><span className="metric-label">Semantic Target</span><strong>{props.state.semantic.target_label || props.state.semantic.target_hint || "--"}</strong></div>
+            <div className="metric-card"><span className="metric-label">Execution Pin</span><strong>{executionPin}</strong></div>
             <div className="metric-card"><span className="metric-label">Execution Hint</span><strong>{currentMessage}</strong></div>
           </div>
 
           <div className="button-row">
             <button className="primary-button" data-testid="execute-button" onClick={props.onExecute} disabled={executeDisabled}>
-              {props.busyAction === "execute" ? "Executing..." : "Execute"}
+              {props.busyAction === "execute" ? "Submitting..." : pendingExecute.active ? "Queued..." : "Execute"}
             </button>
             <button className="ghost-button" data-testid="replan-button" onClick={props.onReplan} disabled={props.busyAction !== null}>
               {props.busyAction === "replan" ? "Re-planning..." : "Re-plan"}
@@ -215,7 +235,7 @@ export function ControlPage(props: ControlPageProps) {
               {props.busyAction === "debug-open" ? "Opening..." : "Open Debug"}
             </button>
           </div>
-          <div className="inline-note">Execute submits the draft override first, waits for the applied label to settle, then calls the execute API.</div>
+          <div className="inline-note">Execute submits the draft override first, then starts search and either arms immediately or queues the pick until target lock arrives.</div>
         </Panel>
 
         <Panel title="Preview Streams" subtitle="Control keeps only small monitoring thumbnails, not the main vision workspace.">

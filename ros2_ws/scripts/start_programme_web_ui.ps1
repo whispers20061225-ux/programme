@@ -1,7 +1,8 @@
 param(
     [string]$Distro = "Ubuntu-24.04",
     [switch]$NoBrowser,
-    [switch]$Watchdog
+    [switch]$Watchdog,
+    [switch]$EnableWatchdog
 )
 
 $ErrorActionPreference = "Stop"
@@ -14,6 +15,9 @@ $linuxStartScript = "/home/whispers/programme/ros2_ws/scripts/start_programme_we
 $stopScript = Join-Path $PSScriptRoot "stop_programme_web_ui.ps1"
 $debugHelperScript = Join-Path $PSScriptRoot "programme_debug_helper.ps1"
 $debugHelperLog = Join-Path $runtimeDir "debug-helper.log"
+$frontendHealthUrl = "http://127.0.0.1:5173/control"
+$gatewayHealthUrl = "http://127.0.0.1:8765/api/bootstrap"
+$watchdogRestartThreshold = 3
 
 function Test-HttpReady {
     param([Parameter(Mandatory = $true)][string]$Url)
@@ -57,8 +61,8 @@ if ($Watchdog) {
     Add-Content -Path $watchdogLog -Value ("[watchdog] started at {0}" -f (Get-Date -Format o))
     $consecutiveFailures = 0
     while ($true) {
-        $frontendOk = Test-HttpReady -Url "http://127.0.0.1:5173/api/bootstrap"
-        $gatewayOk = Test-HttpReady -Url "http://127.0.0.1:8765/api/bootstrap"
+        $frontendOk = Test-HttpReady -Url $frontendHealthUrl
+        $gatewayOk = Test-HttpReady -Url $gatewayHealthUrl
         if ($frontendOk -and $gatewayOk) {
             $consecutiveFailures = 0
         } else {
@@ -67,10 +71,12 @@ if ($Watchdog) {
                 "[watchdog] healthcheck failed at {0}: frontend={1} gateway={2} consecutive={3}" -f
                 (Get-Date -Format o), $frontendOk, $gatewayOk, $consecutiveFailures
             )
-            if ($consecutiveFailures -ge 2) {
+            if ($consecutiveFailures -ge $watchdogRestartThreshold) {
                 Add-Content -Path $watchdogLog -Value ("[watchdog] restarting stack at {0}" -f (Get-Date -Format o))
                 try {
                     Invoke-WslStart
+                    Wait-HttpReady -Url $gatewayHealthUrl -Label "gateway" -TimeoutSec 60
+                    Wait-HttpReady -Url $frontendHealthUrl -Label "frontend" -TimeoutSec 30
                     $consecutiveFailures = 0
                 } catch {
                     Add-Content -Path $watchdogLog -Value (
@@ -88,23 +94,8 @@ New-Item -ItemType Directory -Path $runtimeDir -Force | Out-Null
 
 Invoke-WslStart
 
-Wait-HttpReady -Url "http://127.0.0.1:8765/api/bootstrap" -Label "gateway" -TimeoutSec 30
-Wait-HttpReady -Url "http://127.0.0.1:5173/control" -Label "frontend" -TimeoutSec 20
-
-$watchdogProcess = Start-Process -FilePath "powershell.exe" `
-    -ArgumentList @(
-        "-NoProfile",
-        "-ExecutionPolicy",
-        "Bypass",
-        "-File",
-        $PSCommandPath,
-        "-Distro",
-        $Distro,
-        "-Watchdog"
-    ) `
-    -WindowStyle Hidden `
-    -PassThru
-Set-Content -Path $watchdogPidFile -Value ([string]$watchdogProcess.Id) -Encoding ascii
+Wait-HttpReady -Url $gatewayHealthUrl -Label "gateway" -TimeoutSec 30
+Wait-HttpReady -Url $frontendHealthUrl -Label "frontend" -TimeoutSec 20
 
 $debugHelperProcess = Start-Process -FilePath "powershell.exe" `
     -ArgumentList @(
@@ -118,6 +109,23 @@ $debugHelperProcess = Start-Process -FilePath "powershell.exe" `
     -PassThru
 Set-Content -Path $debugHelperPidFile -Value ([string]$debugHelperProcess.Id) -Encoding ascii
 
+if ($EnableWatchdog) {
+    $watchdogProcess = Start-Process -FilePath "powershell.exe" `
+        -ArgumentList @(
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            $PSCommandPath,
+            "-Distro",
+            $Distro,
+            "-Watchdog"
+        ) `
+        -WindowStyle Hidden `
+        -PassThru
+    Set-Content -Path $watchdogPidFile -Value ([string]$watchdogProcess.Id) -Encoding ascii
+}
+
 if (-not $NoBrowser) {
     Start-Process "http://127.0.0.1:5173/control" | Out-Null
 }
@@ -125,7 +133,11 @@ if (-not $NoBrowser) {
 Write-Host "[start] Programme Web UI is ready"
 Write-Host "[start] control page: http://127.0.0.1:5173/control"
 Write-Host "[start] gateway root: http://127.0.0.1:8765/"
-Write-Host "[start] watchdog pid file: $watchdogPidFile"
-Write-Host "[start] watchdog log: $watchdogLog"
+if ($EnableWatchdog) {
+    Write-Host "[start] watchdog pid file: $watchdogPidFile"
+    Write-Host "[start] watchdog log: $watchdogLog"
+} else {
+    Write-Host "[start] watchdog: disabled"
+}
 Write-Host "[start] debug helper pid file: $debugHelperPidFile"
 Write-Host "[start] debug helper log: $debugHelperLog"

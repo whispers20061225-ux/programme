@@ -4,6 +4,7 @@ import type {
   DialogMessageState,
   SemanticDraft,
   SemanticState,
+  TargetInstanceHint,
   UiEvent,
   UiLevel,
   UiState,
@@ -67,6 +68,7 @@ export const DEFAULT_STATE: UiState = {
     task: "pick",
     target_label: "",
     target_hint: "",
+    target_instance: null,
     gripper: "parallel_gripper",
     constraints: ["parallel_gripper"],
     excluded_labels: [],
@@ -87,6 +89,7 @@ export const DEFAULT_STATE: UiState = {
     phase: "idle",
     target_locked: false,
     pick_active: false,
+    pending_execute: { active: false, source: "", message: "", updated_at: 0 },
     pick_status: {},
     intervention: { active: false, source: "", label: "" },
     grasp_proposals: { proposals: [], selected_index: 0, count: 0, updated_at: 0 },
@@ -99,7 +102,7 @@ export const DEFAULT_STATE: UiState = {
   ui_feedback: { events: [], last_event_id: 0 },
   dialog: {
     session_id: "",
-    mode: "review",
+    mode: "auto",
     reply_language: "zh",
     status: "idle",
     status_label: "Idle",
@@ -111,6 +114,117 @@ export const DEFAULT_STATE: UiState = {
   },
 };
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+export function normalizeUiState(next: UiState | Partial<UiState> | null | undefined): UiState {
+  const root = isRecord(next) ? next : {};
+  const semantic = (isRecord(root.semantic) ? root.semantic : {}) as Partial<UiState["semantic"]>;
+  const vision = (isRecord(root.vision) ? root.vision : {}) as Partial<UiState["vision"]>;
+  const execution = (isRecord(root.execution) ? root.execution : {}) as Partial<UiState["execution"]>;
+  const health = (isRecord(root.health) ? root.health : {}) as Partial<UiState["health"]>;
+  const logs = (isRecord(root.logs) ? root.logs : {}) as Partial<UiState["logs"]>;
+  const uiFeedback = (isRecord(root.ui_feedback) ? root.ui_feedback : {}) as Partial<UiState["ui_feedback"]>;
+  const defaultDialog = DEFAULT_STATE.dialog ?? {
+    session_id: "",
+    mode: "auto",
+    reply_language: "zh",
+    status: "idle",
+    status_label: "Idle",
+    pending_auto_execute: false,
+    last_error: "",
+    visual_focus: null,
+    messages: [],
+    updated_at: 0,
+  };
+  const dialog = (isRecord(root.dialog) ? root.dialog : null) as Partial<NonNullable<UiState["dialog"]>> | null;
+
+  return {
+    ...DEFAULT_STATE,
+    ...root,
+    connection: {
+      ...DEFAULT_STATE.connection,
+      ...(isRecord(root.connection) ? root.connection : {}),
+    },
+    semantic: {
+      ...DEFAULT_STATE.semantic,
+      ...semantic,
+      constraints: Array.isArray(semantic.constraints)
+        ? semantic.constraints as string[]
+        : DEFAULT_STATE.semantic.constraints,
+      excluded_labels: Array.isArray(semantic.excluded_labels)
+        ? semantic.excluded_labels as string[]
+        : DEFAULT_STATE.semantic.excluded_labels,
+    },
+    vision: {
+      ...DEFAULT_STATE.vision,
+      ...vision,
+      detection: {
+        ...DEFAULT_STATE.vision.detection,
+        ...(isRecord(vision.detection) ? vision.detection : {}),
+      },
+      debug: isRecord(vision.debug) ? vision.debug : DEFAULT_STATE.vision.debug,
+      debug_candidates: Array.isArray(vision.debug_candidates)
+        ? vision.debug_candidates as CandidateDebug[]
+        : DEFAULT_STATE.vision.debug_candidates,
+      selected_candidate: (vision.selected_candidate as CandidateDebug | null | undefined) ?? DEFAULT_STATE.vision.selected_candidate,
+    },
+    execution: {
+      ...DEFAULT_STATE.execution,
+      ...execution,
+      pending_execute: {
+        ...DEFAULT_STATE.execution.pending_execute,
+        ...(isRecord(execution.pending_execute) ? execution.pending_execute : {}),
+      },
+      pick_status: isRecord(execution.pick_status) ? execution.pick_status : DEFAULT_STATE.execution.pick_status,
+      intervention: {
+        ...DEFAULT_STATE.execution.intervention,
+        ...(isRecord(execution.intervention) ? execution.intervention : {}),
+      },
+      grasp_proposals: {
+        ...DEFAULT_STATE.execution.grasp_proposals,
+        ...(isRecord(execution.grasp_proposals) ? execution.grasp_proposals : {}),
+        proposals:
+          isRecord(execution.grasp_proposals) && Array.isArray(execution.grasp_proposals.proposals)
+            ? execution.grasp_proposals.proposals as Record<string, unknown>[]
+            : DEFAULT_STATE.execution.grasp_proposals.proposals,
+      },
+      backend_debug: isRecord(execution.backend_debug) ? execution.backend_debug : DEFAULT_STATE.execution.backend_debug,
+      task_goal: isRecord(execution.task_goal) ? execution.task_goal as UiState["execution"]["task_goal"] : undefined,
+      task_status: isRecord(execution.task_status) ? execution.task_status as UiState["execution"]["task_status"] : undefined,
+    },
+    tactile: {
+      ...DEFAULT_STATE.tactile,
+      ...(isRecord(root.tactile) ? root.tactile : {}),
+    },
+    health: {
+      ...DEFAULT_STATE.health,
+      ...health,
+      issues: Array.isArray(health.issues) ? health.issues as Record<string, unknown>[] : DEFAULT_STATE.health.issues,
+      latest: Array.isArray(health.latest) ? health.latest as Record<string, unknown>[] : DEFAULT_STATE.health.latest,
+      arm_state: isRecord(health.arm_state) ? health.arm_state : DEFAULT_STATE.health.arm_state,
+    },
+    logs: {
+      ...DEFAULT_STATE.logs,
+      ...logs,
+      events: Array.isArray(logs.events) ? logs.events as UiEvent[] : DEFAULT_STATE.logs.events,
+    },
+    ui_feedback: {
+      ...DEFAULT_STATE.ui_feedback,
+      ...uiFeedback,
+      events: Array.isArray(uiFeedback.events) ? uiFeedback.events as UiEvent[] : DEFAULT_STATE.ui_feedback.events,
+    },
+    dialog: dialog
+      ? {
+          ...defaultDialog,
+          ...dialog,
+          messages: Array.isArray(dialog.messages) ? dialog.messages as DialogMessageState[] : defaultDialog.messages,
+        }
+      : defaultDialog,
+  };
+}
+
 export function semanticToDraft(semantic: SemanticState): SemanticDraft {
   const constraints = [...(semantic.constraints ?? [])];
   const gripper = semantic.gripper || constraints[0] || "parallel_gripper";
@@ -119,9 +233,48 @@ export function semanticToDraft(semantic: SemanticState): SemanticDraft {
     task: semantic.task || "pick",
     target_label: semantic.target_label || "",
     target_hint: semantic.target_hint || semantic.target_label || "",
+    target_instance: cloneTargetInstance(semantic.target_instance),
     gripper,
     constraints,
     excluded_labels: semantic.excluded_labels ?? [],
+  };
+}
+
+export function cloneTargetInstance(targetInstance: TargetInstanceHint | null | undefined): TargetInstanceHint | null {
+  if (!targetInstance) return null;
+  return {
+    track_id:
+      typeof targetInstance.track_id === "number" && Number.isFinite(targetInstance.track_id)
+        ? targetInstance.track_id
+        : undefined,
+    bbox_xyxy: Array.isArray(targetInstance.bbox_xyxy) ? [...targetInstance.bbox_xyxy] : undefined,
+    point_px: Array.isArray(targetInstance.point_px) ? [...targetInstance.point_px] : undefined,
+    source: typeof targetInstance.source === "string" ? targetInstance.source : undefined,
+  };
+}
+
+export function bboxCenterPoint(bbox: number[] | null | undefined): number[] | undefined {
+  if (!Array.isArray(bbox) || bbox.length !== 4) return undefined;
+  return [
+    Math.round((Number(bbox[0]) + Number(bbox[2])) * 0.5),
+    Math.round((Number(bbox[1]) + Number(bbox[3])) * 0.5),
+  ];
+}
+
+export function candidateToTargetInstance(candidate: CandidateDebug | null | undefined): TargetInstanceHint | null {
+  if (!candidate) return null;
+  const bbox_xyxy = Array.isArray(candidate.bbox_xyxy) ? [...candidate.bbox_xyxy] : undefined;
+  const point_px = bboxCenterPoint(bbox_xyxy);
+  const track_id =
+    typeof candidate.track_id === "number" && Number.isFinite(candidate.track_id) && candidate.track_id > 0
+      ? candidate.track_id
+      : undefined;
+  if (!track_id && !bbox_xyxy?.length) return null;
+  return {
+    track_id,
+    bbox_xyxy,
+    point_px,
+    source: "vision_candidate",
   };
 }
 

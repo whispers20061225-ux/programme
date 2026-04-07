@@ -670,11 +670,10 @@
         <image>
           <width>640</width>
           <height>480</height>
-          <format>R_FLOAT32</format>
         </image>
         <clip>
-          <near>0.03</near>
-          <far>10.0</far>
+          <near>0.10</near>
+          <far>3.0</far>
         </clip>
       </camera>
     </sensor>
@@ -693,6 +692,8 @@
     <hardware>
       <plugin>gz_ros2_control/GazeboSimSystem</plugin>
     </hardware>
+    <!-- Controller-space startup pose aligned with the user-space Return Home pose
+         after arm_sim_driver_node applies joint_zero_offsets_deg. -->
     <joint name="arm_joint1">
       <command_interface name="position"/>
       <state_interface name="position">
@@ -703,21 +704,21 @@
     <joint name="arm_joint2">
       <command_interface name="position"/>
       <state_interface name="position">
-        <param name="initial_value">-1.256637</param>
+        <param name="initial_value">-1.0821041362</param>
       </state_interface>
       <state_interface name="velocity"/>
     </joint>
     <joint name="arm_joint3">
       <command_interface name="position"/>
       <state_interface name="position">
-        <param name="initial_value">1.553343</param>
+        <param name="initial_value">1.7802358370</param>
       </state_interface>
       <state_interface name="velocity"/>
     </joint>
     <joint name="arm_joint4">
       <command_interface name="position"/>
       <state_interface name="position">
-        <param name="initial_value">1.553343</param>
+        <param name="initial_value">1.4311699866</param>
       </state_interface>
       <state_interface name="velocity"/>
     </joint>

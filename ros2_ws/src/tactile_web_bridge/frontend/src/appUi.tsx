@@ -1,13 +1,13 @@
-import { type ReactNode, useCallback, useEffect, useRef, useState } from "react";
+import { type ReactNode, type SetStateAction, useCallback, useEffect, useRef, useState } from "react";
 import type { UiState } from "./types";
 import type { OverlayBox, PillTone, StreamMap } from "./appHelpers";
-import { DEFAULT_STATE } from "./appHelpers";
+import { DEFAULT_STATE, normalizeUiState } from "./appHelpers";
 import { STATE_WS_PATH, backendAssetUrl, backendWsUrl, fetchBootstrap } from "./api";
 
 export type BackendConnectionPhase = "bootstrapping" | "ws-connecting" | "connected" | "degraded" | "reconnecting";
 
 export function useBackendState() {
-  const [state, setState] = useState<UiState>(DEFAULT_STATE);
+  const [state, setStateRaw] = useState<UiState>(DEFAULT_STATE);
   const [streams, setStreams] = useState<StreamMap>({
     rgb: backendAssetUrl("/api/streams/rgb.mjpeg"),
     detection_overlay: backendAssetUrl("/api/streams/detection_overlay.mjpeg"),
@@ -25,6 +25,10 @@ export function useBackendState() {
   useEffect(() => {
     stateRef.current = state;
   }, [state]);
+
+  const setState = useCallback((next: SetStateAction<UiState>) => {
+    setStateRaw((current) => normalizeUiState(typeof next === "function" ? next(current) : next));
+  }, []);
 
   const waitForState = useCallback(
     (predicate: (next: UiState) => boolean, timeoutMs = 3000) =>
@@ -51,7 +55,7 @@ export function useBackendState() {
     let socket: WebSocket | null = null;
 
     const applyBootstrap = (nextState: UiState, nextStreams: StreamMap) => {
-      setState(nextState);
+      setState(normalizeUiState(nextState));
       setStreams(nextStreams);
       bootstrapSettledRef.current = true;
       httpHealthyRef.current = true;
@@ -87,7 +91,7 @@ export function useBackendState() {
         httpHealthyRef.current = true;
         setConnectionPhase("connected");
       };
-      socket.onmessage = (event) => setState(JSON.parse(event.data) as UiState);
+      socket.onmessage = (event) => setState(normalizeUiState(JSON.parse(event.data) as UiState));
       socket.onerror = () => socket?.close();
       socket.onclose = () => {
         if (cancelled) return;

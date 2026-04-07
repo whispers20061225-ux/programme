@@ -1,0 +1,9 @@
+TaskGoal goal
+---
+bool success
+string final_phase
+string message
+string error_code
+TaskExecutionStatus status
+---
+TaskExecutionStatus status

@@ -1,5 +1,6 @@
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
+from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import Node
@@ -67,10 +68,25 @@ def generate_launch_description() -> LaunchDescription:
         default_value="true",
         description="Use WSLg D3D12 GPU acceleration for Gazebo rendering",
     )
+    server_use_gpu_accel_arg = DeclareLaunchArgument(
+        "server_use_gpu_accel",
+        default_value="false",
+        description="Use GPU rendering on the Gazebo server",
+    )
     gpu_adapter_arg = DeclareLaunchArgument(
         "gpu_adapter",
         default_value="NVIDIA",
         description="Preferred GPU adapter name for WSLg D3D12 rendering",
+    )
+    start_demo_task_node_arg = DeclareLaunchArgument(
+        "start_demo_task_node",
+        default_value="true",
+        description="Start the legacy phase6 demo_task_node",
+    )
+    start_ui_subscriber_arg = DeclareLaunchArgument(
+        "start_ui_subscriber",
+        default_value="true",
+        description="Start the legacy tactile_ui_subscriber console bridge",
     )
 
     param_file = LaunchConfiguration("param_file")
@@ -83,7 +99,10 @@ def generate_launch_description() -> LaunchDescription:
     world_name = LaunchConfiguration("world_name")
     bridge_clock = LaunchConfiguration("bridge_clock")
     use_gpu_accel = LaunchConfiguration("use_gpu_accel")
+    server_use_gpu_accel = LaunchConfiguration("server_use_gpu_accel")
     gpu_adapter = LaunchConfiguration("gpu_adapter")
+    start_demo_task_node = LaunchConfiguration("start_demo_task_node")
+    start_ui_subscriber = LaunchConfiguration("start_ui_subscriber")
 
     gazebo_arm_launch = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
@@ -101,6 +120,7 @@ def generate_launch_description() -> LaunchDescription:
             "world_name": world_name,
             "bridge_clock": bridge_clock,
             "use_gpu_accel": use_gpu_accel,
+            "server_use_gpu_accel": server_use_gpu_accel,
             "gpu_adapter": gpu_adapter,
         }.items(),
     )
@@ -111,7 +131,7 @@ def generate_launch_description() -> LaunchDescription:
         name="tactile_sim_node",
         output={"stdout": "log", "stderr": "log"},
         arguments=quiet_node_args,
-        parameters=[param_file],
+        parameters=[param_file, {"use_sim_time": use_sim_time}],
         **respawn_kwargs,
     )
 
@@ -121,7 +141,7 @@ def generate_launch_description() -> LaunchDescription:
         name="arm_sim_driver_node",
         output={"stdout": "log", "stderr": "log"},
         arguments=quiet_node_args,
-        parameters=[param_file],
+        parameters=[param_file, {"use_sim_time": use_sim_time}],
         **respawn_kwargs,
     )
 
@@ -131,7 +151,7 @@ def generate_launch_description() -> LaunchDescription:
         name="arm_control_node",
         output={"stdout": "log", "stderr": "log"},
         arguments=quiet_node_args,
-        parameters=[param_file],
+        parameters=[param_file, {"use_sim_time": use_sim_time}],
         **respawn_kwargs,
     )
 
@@ -141,7 +161,8 @@ def generate_launch_description() -> LaunchDescription:
         name="demo_task_node",
         output={"stdout": "log", "stderr": "log"},
         arguments=quiet_node_args,
-        parameters=[param_file],
+        parameters=[param_file, {"use_sim_time": use_sim_time}],
+        condition=IfCondition(start_demo_task_node),
         **respawn_kwargs,
     )
 
@@ -151,7 +172,8 @@ def generate_launch_description() -> LaunchDescription:
         name="tactile_ui_subscriber",
         output={"stdout": "log", "stderr": "log"},
         arguments=quiet_node_args,
-        parameters=[param_file],
+        parameters=[param_file, {"use_sim_time": use_sim_time}],
+        condition=IfCondition(start_ui_subscriber),
         **respawn_kwargs,
     )
 
@@ -167,7 +189,10 @@ def generate_launch_description() -> LaunchDescription:
             world_name_arg,
             bridge_clock_arg,
             use_gpu_accel_arg,
+            server_use_gpu_accel_arg,
             gpu_adapter_arg,
+            start_demo_task_node_arg,
+            start_ui_subscriber_arg,
             gazebo_arm_launch,
             tactile_sim_node,
             arm_sim_driver_node,

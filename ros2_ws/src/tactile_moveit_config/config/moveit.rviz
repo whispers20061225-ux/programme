@@ -47,13 +47,22 @@ Visualization Manager:
       Value: true
     - Alpha: 1
       Class: rviz_default_plugins/MarkerArray
-      Enabled: true
+      Enabled: false
       Marker Topic: /grasp/ggcnn_shadow/candidate_markers
       Name: GG-CNN Shadow Candidates
       Namespaces:
         {}
       Queue Size: 10
-      Value: true
+      Value: false
+    - Alpha: 1
+      Class: rviz_default_plugins/MarkerArray
+      Enabled: false
+      Marker Topic: /grasp/graspgen_shadow/candidate_markers
+      Name: GraspGen Shadow Candidates
+      Namespaces:
+        {}
+      Queue Size: 10
+      Value: false
     - Alpha: 0.55
       Autocompute Intensity Bounds: true
       Axis: Z
@@ -78,6 +87,15 @@ Visualization Manager:
       Use rainbow: false
       Value: false
     - Alpha: 1
+      Class: rviz_default_plugins/MarkerArray
+      Enabled: false
+      Marker Topic: /grasp/graspgen_shadow/topk_pair_markers
+      Name: GraspGen TopK Pairs
+      Namespaces:
+        {}
+      Queue Size: 10
+      Value: false
+    - Alpha: 1
       Autocompute Intensity Bounds: true
       Axis: Z
       Channel Name: intensity
@@ -93,10 +111,42 @@ Visualization Manager:
       Position Transformer: XYZ
       Queue Size: 10
       Selectable: true
-      Size (Pixels): 10
-      Size (m): 0.025
+      Size (Pixels): 4
+      Size (m): 0.0025
       Style: Spheres
       Topic: /perception/target_cloud
+      Use Fixed Frame: true
+      Use rainbow: false
+      Value: true
+    - Alpha: 0.35
+      Class: rviz_default_plugins/Marker
+      Enabled: true
+      Marker Topic: /perception/target_primitive_marker
+      Name: Target Primitive Marker
+      Namespaces:
+        {}
+      Queue Size: 10
+      Value: true
+    - Alpha: 1
+      Autocompute Intensity Bounds: true
+      Axis: Z
+      Channel Name: intensity
+      Class: rviz_default_plugins/PointCloud2
+      Color: 80; 255; 230
+      Color Transformer: FlatColor
+      Decay Time: 0
+      Enabled: true
+      Invert Rainbow: false
+      Max Color: 255; 255; 255
+      Min Color: 0; 0; 0
+      Name: Target Fit Cloud
+      Position Transformer: XYZ
+      Queue Size: 10
+      Selectable: true
+      Size (Pixels): 4
+      Size (m): 0.0023
+      Style: Spheres
+      Topic: /perception/target_cloud_fitted
       Use Fixed Frame: true
       Use rainbow: false
       Value: true
@@ -131,7 +181,7 @@ Visualization Manager:
       Color: 255; 96; 96
       Color Transformer: FlatColor
       Decay Time: 0
-      Enabled: true
+      Enabled: false
       Invert Rainbow: false
       Max Color: 255; 255; 255
       Min Color: 0; 0; 0
@@ -145,7 +195,30 @@ Visualization Manager:
       Topic: /grasp/ggcnn_shadow/selected_contact_point_1_cloud
       Use Fixed Frame: true
       Use rainbow: false
-      Value: true
+      Value: false
+    - Alpha: 1
+      Autocompute Intensity Bounds: true
+      Axis: Z
+      Channel Name: intensity
+      Class: rviz_default_plugins/PointCloud2
+      Color: 255; 120; 120
+      Color Transformer: FlatColor
+      Decay Time: 0
+      Enabled: false
+      Invert Rainbow: false
+      Max Color: 255; 255; 255
+      Min Color: 0; 0; 0
+      Name: GraspGen Contact 1
+      Position Transformer: XYZ
+      Queue Size: 10
+      Selectable: true
+      Size (Pixels): 10
+      Size (m): 0.010
+      Style: Spheres
+      Topic: /grasp/graspgen_shadow/selected_contact_point_1_cloud
+      Use Fixed Frame: true
+      Use rainbow: false
+      Value: false
     - Alpha: 1
       Autocompute Intensity Bounds: true
       Axis: Z
@@ -177,7 +250,7 @@ Visualization Manager:
       Color: 96; 160; 255
       Color Transformer: FlatColor
       Decay Time: 0
-      Enabled: true
+      Enabled: false
       Invert Rainbow: false
       Max Color: 255; 255; 255
       Min Color: 0; 0; 0
@@ -191,7 +264,30 @@ Visualization Manager:
       Topic: /grasp/ggcnn_shadow/selected_contact_point_2_cloud
       Use Fixed Frame: true
       Use rainbow: false
-      Value: true
+      Value: false
+    - Alpha: 1
+      Autocompute Intensity Bounds: true
+      Axis: Z
+      Channel Name: intensity
+      Class: rviz_default_plugins/PointCloud2
+      Color: 96; 180; 255
+      Color Transformer: FlatColor
+      Decay Time: 0
+      Enabled: false
+      Invert Rainbow: false
+      Max Color: 255; 255; 255
+      Min Color: 0; 0; 0
+      Name: GraspGen Contact 2
+      Position Transformer: XYZ
+      Queue Size: 10
+      Selectable: true
+      Size (Pixels): 10
+      Size (m): 0.010
+      Style: Spheres
+      Topic: /grasp/graspgen_shadow/selected_contact_point_2_cloud
+      Use Fixed Frame: true
+      Use rainbow: false
+      Value: false
     - Alpha: 1
       Autocompute Intensity Bounds: true
       Axis: Z
@@ -223,7 +319,7 @@ Visualization Manager:
       Color: 255; 220; 96
       Color Transformer: FlatColor
       Decay Time: 0
-      Enabled: true
+      Enabled: false
       Invert Rainbow: false
       Max Color: 255; 255; 255
       Min Color: 0; 0; 0
@@ -235,6 +331,98 @@ Visualization Manager:
       Size (m): 0.009
       Style: Spheres
       Topic: /grasp/ggcnn_shadow/selected_grasp_center_cloud
+      Use Fixed Frame: true
+      Use rainbow: false
+      Value: false
+    - Alpha: 1
+      Autocompute Intensity Bounds: true
+      Axis: Z
+      Channel Name: intensity
+      Class: rviz_default_plugins/PointCloud2
+      Color: 120; 255; 200
+      Color Transformer: FlatColor
+      Decay Time: 0
+      Enabled: false
+      Invert Rainbow: false
+      Max Color: 255; 255; 255
+      Min Color: 0; 0; 0
+      Name: GraspGen Grasp Center
+      Position Transformer: XYZ
+      Queue Size: 10
+      Selectable: true
+      Size (Pixels): 10
+      Size (m): 0.009
+      Style: Spheres
+      Topic: /grasp/graspgen_shadow/selected_grasp_center_cloud
+      Use Fixed Frame: true
+      Use rainbow: false
+      Value: false
+    - Alpha: 1
+      Autocompute Intensity Bounds: true
+      Axis: Z
+      Channel Name: intensity
+      Class: rviz_default_plugins/PointCloud2
+      Color: 96; 255; 180
+      Color Transformer: FlatColor
+      Decay Time: 0
+      Enabled: true
+      Invert Rainbow: false
+      Max Color: 255; 255; 255
+      Min Color: 0; 0; 0
+      Name: GraspGen TopK Pair Lines
+      Position Transformer: XYZ
+      Queue Size: 10
+      Selectable: true
+      Size (Pixels): 4
+      Size (m): 0.003
+      Style: Spheres
+      Topic: /grasp/topk_cloud
+      Use Fixed Frame: true
+      Use rainbow: false
+      Value: true
+    - Alpha: 1
+      Autocompute Intensity Bounds: true
+      Axis: Z
+      Channel Name: intensity
+      Class: rviz_default_plugins/PointCloud2
+      Color: 255; 120; 160
+      Color Transformer: FlatColor
+      Decay Time: 0
+      Enabled: true
+      Invert Rainbow: false
+      Max Color: 255; 255; 255
+      Min Color: 0; 0; 0
+      Name: GraspGen TopK Contact 1
+      Position Transformer: XYZ
+      Queue Size: 10
+      Selectable: true
+      Size (Pixels): 7
+      Size (m): 0.004
+      Style: Spheres
+      Topic: /grasp/topk_contact_point_1_cloud
+      Use Fixed Frame: true
+      Use rainbow: false
+      Value: true
+    - Alpha: 1
+      Autocompute Intensity Bounds: true
+      Axis: Z
+      Channel Name: intensity
+      Class: rviz_default_plugins/PointCloud2
+      Color: 120; 170; 255
+      Color Transformer: FlatColor
+      Decay Time: 0
+      Enabled: true
+      Invert Rainbow: false
+      Max Color: 255; 255; 255
+      Min Color: 0; 0; 0
+      Name: GraspGen TopK Contact 2
+      Position Transformer: XYZ
+      Queue Size: 10
+      Selectable: true
+      Size (Pixels): 7
+      Size (m): 0.004
+      Style: Spheres
+      Topic: /grasp/topk_contact_point_2_cloud
       Use Fixed Frame: true
       Use rainbow: false
       Value: true

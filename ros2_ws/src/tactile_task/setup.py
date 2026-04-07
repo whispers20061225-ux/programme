@@ -21,6 +21,8 @@ setup(
     entry_points={
         "console_scripts": [
             "demo_task_node = tactile_task.demo_task_node:main",
+            "task_executive_node = tactile_task.task_executive_node:main",
+            "search_target_skill_node = tactile_task.search_target_skill_node:main",
         ],
     },
 )

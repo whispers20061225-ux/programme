@@ -7,14 +7,20 @@ import type { CandidateDebug, UiState } from "./types";
 type VisionPageProps = {
   state: UiState;
   streams: StreamMap;
-  onChooseLabel: (label: string) => void;
+  onChooseCandidate: (candidate: CandidateDebug) => void;
 };
 
 const OVERLAY_CONFIDENCE_FLOOR = 0.07;
 
 function overlayConfidence(candidate: CandidateDebug | null | undefined): number {
   if (!candidate) return 0;
-  return candidate.yolo_confidence ?? candidate.confidence ?? 0;
+  return (
+    candidate.confidence ??
+    candidate.selection_confidence_smoothed ??
+    candidate.selection_confidence ??
+    candidate.yolo_confidence ??
+    0
+  );
 }
 
 function candidateDisplayLabel(candidate: CandidateDebug | null | undefined): string {
@@ -22,9 +28,18 @@ function candidateDisplayLabel(candidate: CandidateDebug | null | undefined): st
   return candidate.display_label || candidate.label_zh || candidate.canonical_label || candidate.label || "--";
 }
 
-function candidatePickLabel(candidate: CandidateDebug | null | undefined): string {
-  if (!candidate) return "";
-  return candidate.canonical_label || candidate.label_zh || candidate.label || "";
+function candidateDisplayStatus(candidate: CandidateDebug | null | undefined): string {
+  if (!candidate) return "--";
+  return candidate.display_status || candidate.status || "--";
+}
+
+function candidateDisplayStatusTone(candidate: CandidateDebug | null | undefined): "success" | "info" | "warn" | "neutral" {
+  const status = candidateDisplayStatus(candidate);
+  if (status === "tracked") return "success";
+  if (status === "detected") return "info";
+  if (status === "track_hold") return "warn";
+  if (status === "selectable") return "success";
+  return "warn";
 }
 
 export function VisionPage(props: VisionPageProps) {
@@ -96,7 +111,7 @@ export function VisionPage(props: VisionPageProps) {
     <div className="page-grid vision-grid">
       <Panel
         title="Vision Monitor"
-        subtitle="Detection overlay draws candidate boxes on top of the live RGB stream. All candidates with confidence >= 0.07 are shown, and hovering a candidate highlights its bounding box."
+        subtitle="Detection Overlay draws backend candidate tracks on top of the live RGB stream. Clicking a candidate immediately switches the active semantic target; hovering or selecting highlights its current bounding box."
         className="panel-tall"
         actions={
           <div className="toggle-row">
@@ -137,7 +152,7 @@ export function VisionPage(props: VisionPageProps) {
         </div>
       </Panel>
 
-      <Panel title="Top-K Candidates" subtitle="Clicking a candidate only stages a label-level override. There is no instance pinning in v1.">
+      <Panel title="Top-K Candidates" subtitle="Clicking a candidate commits its label and instance hint as the active semantic target, then keeps execution label-driven.">
         {visibleCandidates.length === 0 ? (
           <EmptyState title="No candidates yet" message="Waiting for detection_debug top-k candidates and bounding boxes." />
         ) : (
@@ -153,11 +168,11 @@ export function VisionPage(props: VisionPageProps) {
                   className={["candidate-item", isHovered ? "hovered" : "", isSelected ? "selected" : ""].filter(Boolean).join(" ")}
                   onMouseEnter={() => setHoveredIndex(candidate.index)}
                   onMouseLeave={() => setHoveredIndex((current) => (current === candidate.index ? null : current))}
-                  onClick={() => props.onChooseLabel(candidatePickLabel(candidate))}
+                  onClick={() => props.onChooseCandidate(candidate)}
                 >
                   <div className="candidate-header">
                     <strong>{candidateDisplayLabel(candidate)}</strong>
-                    <StatusPill tone={candidate.status === "selectable" ? "success" : "warn"}>{candidate.status}</StatusPill>
+                    <StatusPill tone={candidateDisplayStatusTone(candidate)}>{candidateDisplayStatus(candidate)}</StatusPill>
                   </div>
                   <div className="candidate-meta">
                     <span>index {candidate.index}</span>
@@ -167,8 +182,9 @@ export function VisionPage(props: VisionPageProps) {
                     <span>bonus {formatNumber(candidate.semantic_bonus, 3)}</span>
                   </div>
                   <div className="candidate-meta">
-                    <span>target {candidatePickLabel(candidate) || "--"}</span>
+                    <span>target {candidate.canonical_label || candidate.label_zh || candidate.label || "--"}</span>
                     <span>source {candidate.label_source || "yolo"}</span>
+                    <span>select {candidate.selection_status || candidate.status || "--"}</span>
                     <span>relabel {candidate.track_relabel_reason || "--"}</span>
                   </div>
                   <div className="candidate-meta">

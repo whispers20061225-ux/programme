@@ -222,6 +222,202 @@ def statistical_outlier_filter(
     return filtered_points
 
 
+def remove_dominant_plane(
+    points_xyz: np.ndarray,
+    *,
+    distance_threshold_m: float,
+    min_inlier_ratio: float,
+    min_points: int,
+    max_iterations: int = 64,
+    preferred_axis: Optional[np.ndarray] = None,
+    preferred_axis_alignment_min: float = 0.0,
+) -> tuple[np.ndarray, int]:
+    points = np.asarray(points_xyz, dtype=np.float32).reshape((-1, 3))
+    point_count = int(points.shape[0])
+    if point_count < max(8, int(min_points)):
+        return points, 0
+
+    threshold = max(1e-4, float(distance_threshold_m))
+    min_ratio = max(0.0, min(1.0, float(min_inlier_ratio)))
+    preferred = None
+    if preferred_axis is not None:
+        preferred = np.asarray(preferred_axis, dtype=np.float64).reshape((3,))
+        norm = float(np.linalg.norm(preferred))
+        if norm > 1e-6:
+            preferred = preferred / norm
+        else:
+            preferred = None
+    alignment_min = max(0.0, min(1.0, float(preferred_axis_alignment_min)))
+
+    def plane_is_acceptable(
+        normal_vec: np.ndarray,
+        inlier_mask: np.ndarray,
+    ) -> bool:
+        inlier_count = int(np.count_nonzero(inlier_mask))
+        if inlier_count < max(3, int(min_points)):
+            return False
+        if (inlier_count / float(point_count)) < min_ratio:
+            return False
+        if preferred is not None:
+            alignment = abs(float(np.dot(normal_vec, preferred)))
+            if alignment < alignment_min:
+                return False
+        inlier_points = points[inlier_mask]
+        if inlier_points.size == 0:
+            return False
+        low_percentile = float(np.percentile(points[:, 2], 35.0))
+        return float(np.mean(inlier_points[:, 2])) <= (low_percentile + threshold * 2.0)
+
+    best_inlier_mask: Optional[np.ndarray] = None
+    best_inlier_count = 0
+
+    if o3d is not None:
+        point_cloud = o3d.geometry.PointCloud()
+        point_cloud.points = o3d.utility.Vector3dVector(points.astype(np.float64))
+        try:
+            plane_model, inlier_indices = point_cloud.segment_plane(
+                distance_threshold=threshold,
+                ransac_n=3,
+                num_iterations=max(16, int(max_iterations)),
+            )
+            normal = np.asarray(plane_model[:3], dtype=np.float64)
+            normal_norm = float(np.linalg.norm(normal))
+            if normal_norm > 1e-6:
+                normal = normal / normal_norm
+                mask = np.zeros((point_count,), dtype=bool)
+                mask[np.asarray(inlier_indices, dtype=np.int64)] = True
+                if plane_is_acceptable(normal, mask):
+                    best_inlier_mask = mask
+                    best_inlier_count = int(np.count_nonzero(mask))
+        except Exception:  # noqa: BLE001
+            best_inlier_mask = None
+            best_inlier_count = 0
+
+    if best_inlier_mask is None:
+        rng = np.random.default_rng()
+        points64 = points.astype(np.float64)
+        for _ in range(max(16, int(max_iterations))):
+            sample_indices = rng.choice(point_count, size=3, replace=False)
+            p0, p1, p2 = points64[sample_indices]
+            normal = np.cross(p1 - p0, p2 - p0)
+            normal_norm = float(np.linalg.norm(normal))
+            if normal_norm <= 1e-6:
+                continue
+            normal = normal / normal_norm
+            if preferred is not None:
+                alignment = abs(float(np.dot(normal, preferred)))
+                if alignment < alignment_min:
+                    continue
+            offset = -float(np.dot(normal, p0))
+            distances = np.abs(points64 @ normal + offset)
+            inlier_mask = distances <= threshold
+            inlier_count = int(np.count_nonzero(inlier_mask))
+            if inlier_count <= best_inlier_count:
+                continue
+            if not plane_is_acceptable(normal, inlier_mask):
+                continue
+            best_inlier_mask = inlier_mask
+            best_inlier_count = inlier_count
+
+    if best_inlier_mask is None or best_inlier_count <= 0:
+        return points, 0
+    filtered_points = points[~best_inlier_mask]
+    if int(filtered_points.shape[0]) < max(8, int(min_points)):
+        return points, 0
+    return filtered_points, best_inlier_count
+
+
+def select_anchor_cluster(
+    points_xyz: np.ndarray,
+    *,
+    tolerance_m: float,
+    min_points: int,
+    anchor_point_xyz: Optional[np.ndarray] = None,
+) -> tuple[np.ndarray, int]:
+    points = np.asarray(points_xyz, dtype=np.float32).reshape((-1, 3))
+    point_count = int(points.shape[0])
+    if point_count < max(8, int(min_points)):
+        return points, 0
+
+    eps = max(1e-4, float(tolerance_m))
+    min_cluster_points = max(2, int(min_points))
+
+    if o3d is not None:
+        point_cloud = o3d.geometry.PointCloud()
+        point_cloud.points = o3d.utility.Vector3dVector(points.astype(np.float64))
+        try:
+            labels = np.asarray(
+                point_cloud.cluster_dbscan(
+                    eps=eps,
+                    min_points=min_cluster_points,
+                    print_progress=False,
+                ),
+                dtype=np.int32,
+            )
+        except Exception:  # noqa: BLE001
+            labels = np.full((point_count,), -1, dtype=np.int32)
+    else:
+        labels = np.full((point_count,), -1, dtype=np.int32)
+        distances = np.linalg.norm(
+            points[:, np.newaxis, :].astype(np.float64) - points[np.newaxis, :, :].astype(np.float64),
+            axis=2,
+        )
+        adjacency = distances <= eps
+        visited = np.zeros((point_count,), dtype=bool)
+        next_label = 0
+        for start_idx in range(point_count):
+            if visited[start_idx]:
+                continue
+            visited[start_idx] = True
+            neighbors = np.flatnonzero(adjacency[start_idx])
+            if int(neighbors.size) < min_cluster_points:
+                continue
+            component = {int(start_idx)}
+            queue = [int(idx) for idx in neighbors.tolist()]
+            while queue:
+                idx = int(queue.pop())
+                if idx not in component:
+                    component.add(idx)
+                if visited[idx]:
+                    continue
+                visited[idx] = True
+                idx_neighbors = np.flatnonzero(adjacency[idx])
+                if int(idx_neighbors.size) < min_cluster_points:
+                    continue
+                for neighbor_idx in idx_neighbors.tolist():
+                    if neighbor_idx not in component:
+                        queue.append(int(neighbor_idx))
+            component_indices = np.asarray(sorted(component), dtype=np.int32)
+            if int(component_indices.size) >= min_cluster_points:
+                labels[component_indices] = next_label
+                next_label += 1
+
+    unique_labels = [int(label) for label in np.unique(labels) if int(label) >= 0]
+    if not unique_labels:
+        return points, 0
+
+    selected_label: Optional[int] = None
+    if anchor_point_xyz is not None:
+        anchor = np.asarray(anchor_point_xyz, dtype=np.float64).reshape((3,))
+        nearest_idx = int(
+            np.argmin(np.linalg.norm(points.astype(np.float64) - anchor.reshape((1, 3)), axis=1))
+        )
+        nearest_label = int(labels[nearest_idx])
+        if nearest_label >= 0:
+            selected_label = nearest_label
+
+    if selected_label is None:
+        selected_label = max(
+            unique_labels,
+            key=lambda label: int(np.count_nonzero(labels == label)),
+        )
+
+    selected_points = points[labels == int(selected_label)]
+    if int(selected_points.shape[0]) < min_cluster_points:
+        return points, len(unique_labels)
+    return selected_points, len(unique_labels)
+
+
 def open3d_available() -> bool:
     return o3d is not None
 

@@ -45,6 +45,7 @@ class SimSearchSweepNode(Node):
         self.declare_parameter("vision_result_topic", "/qwen/vision_result")
         self.declare_parameter("auto_start_enabled", True)
         self.declare_parameter("enable_service", "/task/start_search_sweep")
+        self.declare_parameter("disable_service", "/task/stop_search_sweep")
         self.declare_parameter("joint_state_topic", "/joint_states")
         self.declare_parameter(
             "search_pose_deg",
@@ -55,6 +56,8 @@ class SimSearchSweepNode(Node):
             [-90.0, -84.0, -78.0, -72.0],
         )
         self.declare_parameter("startup_delay_sec", 3.0)
+        self.declare_parameter("startup_prepare_home", False)
+        self.declare_parameter("startup_prepare_home_delay_sec", 0.0)
         self.declare_parameter("motion_duration_sec", 1.0)
         self.declare_parameter("settle_duration_sec", 0.5)
         self.declare_parameter("joint1_min_deg", -180.0)
@@ -106,6 +109,7 @@ class SimSearchSweepNode(Node):
         ).strip()
         self.auto_start_enabled = bool(self.get_parameter("auto_start_enabled").value)
         self.enable_service = str(self.get_parameter("enable_service").value).strip()
+        self.disable_service = str(self.get_parameter("disable_service").value).strip()
         self.vision_result_topic = detection_result_topic or legacy_vision_result_topic
         self.joint_state_topic = str(self.get_parameter("joint_state_topic").value).strip()
         self.search_pose_deg = [
@@ -129,6 +133,10 @@ class SimSearchSweepNode(Node):
         self.scan_joint1_angles_deg = clamped_scan_angles or [self.search_pose_deg[0]]
 
         self.startup_delay_sec = max(0.0, float(self.get_parameter("startup_delay_sec").value))
+        self.startup_prepare_home = bool(self.get_parameter("startup_prepare_home").value)
+        self.startup_prepare_home_delay_sec = max(
+            0.0, float(self.get_parameter("startup_prepare_home_delay_sec").value)
+        )
         self.motion_duration_sec = max(0.2, float(self.get_parameter("motion_duration_sec").value))
         self.settle_duration_sec = max(0.0, float(self.get_parameter("settle_duration_sec").value))
         self.stop_after_first_lock = bool(self.get_parameter("stop_after_first_lock").value)
@@ -225,8 +233,15 @@ class SimSearchSweepNode(Node):
         self._candidate_visible = False
         self._goal_inflight = False
         self._initialized = False
+        self._startup_prepare_home_pending = self.startup_prepare_home
         self._scan_index = 0
-        self._next_motion_time = self.get_clock().now().nanoseconds / 1e9 + self.startup_delay_sec
+        initial_delay_sec = (
+            self.startup_prepare_home_delay_sec
+            if self._startup_prepare_home_pending
+            else self.startup_delay_sec
+        )
+        self._next_motion_time = self.get_clock().now().nanoseconds / 1e9 + initial_delay_sec
+        self._active_goal_handle = None
 
         self._current_pose_deg: Optional[List[float]] = None
         self._last_command_pose_deg: List[float] = list(self.search_pose_deg)
@@ -267,6 +282,8 @@ class SimSearchSweepNode(Node):
         self.create_subscription(JointState, self.joint_state_topic, self._on_joint_state, 10)
         if self.enable_service:
             self.create_service(Trigger, self.enable_service, self._on_enable_search_sweep)
+        if self.disable_service:
+            self.create_service(Trigger, self.disable_service, self._on_disable_search_sweep)
         if self.pick_active_topic:
             self.create_subscription(Bool, self.pick_active_topic, self._on_pick_active, 10)
         if self.pick_status_topic:
@@ -292,6 +309,7 @@ class SimSearchSweepNode(Node):
             f"vision_result_topic={self.vision_result_topic or '<disabled>'}, "
             f"vertical_joint={self.JOINT_NAMES[self.vertical_joint_index]}, "
             f"auto_start_enabled={self.auto_start_enabled}, "
+            f"disable_service={self.disable_service or '<disabled>'}, "
             f"pick_active_topic={self.pick_active_topic or '<disabled>'}, "
             f"pick_status_topic={self.pick_status_topic or '<disabled>'}, "
             f"candidate_visible_topic={self.candidate_visible_topic or '<disabled>'}"
@@ -310,16 +328,54 @@ class SimSearchSweepNode(Node):
         self._goal_inflight = False
         self._failure_hold = False
         self._failure_return_pending = False
+        self._startup_prepare_home_pending = self.startup_prepare_home
         self._scan_index = 0
         self._clear_runtime_tracking(clear_session=True)
-        self._next_motion_time = self.get_clock().now().nanoseconds / 1e9 + self.startup_delay_sec
+        initial_delay_sec = (
+            self.startup_prepare_home_delay_sec
+            if self._startup_prepare_home_pending
+            else self.startup_delay_sec
+        )
+        self._next_motion_time = self.get_clock().now().nanoseconds / 1e9 + initial_delay_sec
         self.get_logger().info("search sweep enabled by external request")
         response.success = True
         response.message = "search sweep enabled"
         return response
 
+    def _on_disable_search_sweep(
+        self, _: Trigger.Request, response: Trigger.Response
+    ) -> Trigger.Response:
+        self._enabled = False
+        self._locked = False
+        self._locked_once = False
+        self._failure_hold = False
+        self._failure_return_pending = False
+        self._clear_runtime_tracking(clear_session=True)
+        self._next_motion_time = self.get_clock().now().nanoseconds / 1e9
+        self._goal_inflight = False
+
+        goal_handle = self._active_goal_handle
+        self._active_goal_handle = None
+        if goal_handle is not None:
+            try:
+                goal_handle.cancel_goal_async()
+                self.get_logger().info("search sweep disabled; active trajectory cancel requested")
+                response.message = "search sweep disabled; active trajectory cancel requested"
+            except Exception as exc:  # pragma: no cover
+                self.get_logger().warn(
+                    f"search sweep disable could not cancel active trajectory: {exc}"
+                )
+                response.message = f"search sweep disabled; cancel failed: {exc}"
+            response.success = True
+            return response
+
+        self.get_logger().info("search sweep disabled")
+        response.success = True
+        response.message = "search sweep disabled"
+        return response
+
     def _on_target_locked(self, msg: Bool) -> None:
-        if self._failure_hold:
+        if self._failure_hold or not self._enabled:
             return
         was_locked = self._locked
         self._locked = bool(msg.data)
@@ -345,7 +401,7 @@ class SimSearchSweepNode(Node):
             self.get_logger().info("search sweep lost target lock; resuming scan")
 
     def _on_pick_active(self, msg: Bool) -> None:
-        if self._failure_hold:
+        if self._failure_hold or not self._enabled:
             return
         was_pick_active = self._pick_active
         self._pick_active = bool(msg.data)
@@ -370,7 +426,7 @@ class SimSearchSweepNode(Node):
             self._enter_failure_hold(message or "pick sequence failed")
 
     def _on_candidate_visible(self, msg: Bool) -> None:
-        if self._failure_hold:
+        if self._failure_hold or not self._enabled:
             return
         was_candidate_visible = self._candidate_visible
         requested_visible = bool(msg.data)
@@ -408,7 +464,7 @@ class SimSearchSweepNode(Node):
         self._current_pose_deg = pose_deg
 
     def _on_vision_result(self, msg: DetectionResult) -> None:
-        if self._failure_hold:
+        if self._failure_hold or not self._enabled:
             return
         now_sec = self.get_clock().now().nanoseconds / 1e9
         point_px_value = (
@@ -598,7 +654,10 @@ class SimSearchSweepNode(Node):
         self._failure_return_pending = True
         self._locked_once = False
         self._goal_inflight = False
-        self._clear_runtime_tracking(clear_session=True)
+        # Preserve the target session so the detector can stay target-locked
+        # after failure and re-arm to the same visual target instead of falling
+        # back to a scene-level prompt.
+        self._clear_runtime_tracking(clear_session=False)
         self._next_motion_time = self.get_clock().now().nanoseconds / 1e9
         self.get_logger().warn(
             "search sweep entering failure hold: "
@@ -607,7 +666,7 @@ class SimSearchSweepNode(Node):
 
     def _on_timer(self) -> None:
         now_sec = self.get_clock().now().nanoseconds / 1e9
-        if not self._enabled:
+        if not self._enabled and not self._startup_prepare_home_pending:
             return
         if self._failure_hold:
             if self._failure_return_pending and not self._goal_inflight:
@@ -632,9 +691,24 @@ class SimSearchSweepNode(Node):
 
         if not self._initialized:
             self._initialized = True
-            self._next_motion_time = now_sec + self.startup_delay_sec
-            self.get_logger().info(
-                f"search sweep waiting {self.startup_delay_sec:.1f}s for initial pose assessment"
+            if self._startup_prepare_home_pending:
+                self._next_motion_time = now_sec + self.startup_prepare_home_delay_sec
+                self.get_logger().info(
+                    "search sweep waiting "
+                    f"{self.startup_prepare_home_delay_sec:.1f}s for startup home preparation"
+                )
+            else:
+                self._next_motion_time = now_sec + self.startup_delay_sec
+                self.get_logger().info(
+                    f"search sweep waiting {self.startup_delay_sec:.1f}s for initial pose assessment"
+                )
+            return
+
+        if self._startup_prepare_home_pending:
+            self._startup_prepare_home_pending = False
+            self._send_goal(
+                list(self.failure_return_pose_deg),
+                "startup prepare configured home pose",
             )
             return
 
@@ -922,11 +996,13 @@ class SimSearchSweepNode(Node):
             self._next_motion_time = self.get_clock().now().nanoseconds / 1e9 + 1.0
             return
 
+        self._active_goal_handle = goal_handle
         result_future = goal_handle.get_result_async()
         result_future.add_done_callback(lambda result: self._on_goal_result(result, label))
 
     def _on_goal_result(self, future, label: str) -> None:
         self._goal_inflight = False
+        self._active_goal_handle = None
         self._next_motion_time = (
             self.get_clock().now().nanoseconds / 1e9 + self.settle_duration_sec
         )
