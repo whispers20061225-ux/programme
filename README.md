@@ -1,184 +1,258 @@
-# 触觉夹爪演示系统（programme）
+# Programme: 触觉抓取 Phase8 Web 端系统
 
-一个面向机械臂抓取场景的触觉感知与控制项目，包含：
+> 当前推荐运行路径：WSL2 / Ubuntu 24.04 / ROS 2 Jazzy / phase8 web stack。  
+> 旧的 `main.py` + Qt UI 仍保留用于历史兼容，但不再是当前主链路。
 
-- 触觉传感数据采集与处理
-- 夹爪/舵机控制
-- 视觉与姿态估计模块
-- 仿真（PyBullet）与 GUI
-- 深度学习相关推理与训练组件
+## 1. 项目现在在做什么
 
-仓库已按主流 GitHub Python 项目结构标准化，便于后续开发、协作与扩展。
+这个仓库当前最重要的链路，是一个面向桌面抓取任务的 ROS 2 Web 端系统：
 
-## 1. 项目结构
+`自然语言指令 -> 多模态语义理解 -> 开放词汇分割与 ROI 锁定 -> 深度反投影与点云滤波 -> 几何拟合/补全 -> 抓取候选生成 -> pregrasp/grasp 规划 -> 执行 -> Web 端监控与复位`
+
+当前主链路围绕 `phase8_web_ui.launch.py` 展开，核心能力包括：
+
+- 中文或英文任务输入，自动结构化为 `SemanticTask`
+- 基于语义提示的开放词汇实例分割与目标锁定
+- 从 2D 检测结果反投影到 3D 点云，并做滤波、平面剔除、聚类与几何补全
+- 使用 GraspGen 生成外部抓取候选，使用 MoveIt 做 pregrasp/grasp 规划
+- Web 端统一提供 `Control / Vision / Tactile / Logs` 四个工作页
+- 支持 `Re-plan`、`Return Home`、`Reset Scene` 与调试视图
+
+## 2. 当前推荐看的包
+
+| 包 | 作用 |
+| --- | --- |
+| `ros2_ws/src/tactile_bringup` | 当前 phase8 的 launch 和参数总入口 |
+| `ros2_ws/src/tactile_web_bridge` | FastAPI/WebSocket 网关 + React/Vite Web 前端 |
+| `ros2_ws/src/tactile_vision` | 语义理解、开放词汇分割、点云处理、几何拟合、抓取候选后端 |
+| `ros2_ws/src/tactile_task` | 搜索与任务编排 |
+| `ros2_ws/src/tactile_task_cpp` | MoveIt 执行、pregrasp/grasp 规划与 return home |
+| `ros2_ws/src/tactile_control` | 控制层安全代理，向硬件/仿真驱动转发 |
+| `ros2_ws/src/tactile_hardware` | 机械臂与触觉传感器驱动，含仿真 fallback |
+| `ros2_ws/src/tactile_sim` | Gazebo 仿真、场景复位、搜索扫描等仿真能力 |
+
+如果你现在只是想理解当前系统，不建议先从旧 `src/`、`main.py`、PyQt 开始看。
+
+## 3. 运行环境建议
+
+### 3.1 推荐运行环境
+
+- WSL2
+- Ubuntu 24.04
+- ROS 2 Jazzy
+- Gazebo Sim / MoveIt 2
+- Node.js + npm（用于构建前端）
+
+当前这份 README 以实际运行仓库 `/home/whispers/programme` 为准。
+
+### 3.2 关于 Python 环境
+
+这个仓库同时保留了两套历史：
+
+- `environment.yml` / `requirements.txt`：偏 legacy Python 工具链
+- `ros2_ws/`：当前 phase8 ROS 2 主链
+
+当前 phase8 Web 端建议在 WSL 的 ROS 2 shell 中运行，不要把 Windows 侧 Python 环境当作当前主运行环境。
+
+### 3.3 系统依赖
+
+至少需要这些系统级依赖：
+
+```bash
+sudo apt update
+sudo apt install -y \
+  python3-colcon-common-extensions \
+  python3-rosdep \
+  python3-vcstool \
+  python3-fastapi \
+  python3-uvicorn \
+  python3-websockets \
+  python3-requests \
+  ros-jazzy-ros-gz-sim \
+  ros-jazzy-ros-gz \
+  ros-jazzy-ros-gz-bridge \
+  ros-jazzy-gz-ros2-control \
+  ros-jazzy-ros2-control \
+  ros-jazzy-ros2-controllers \
+  ros-jazzy-joint-state-broadcaster \
+  ros-jazzy-joint-trajectory-controller \
+  ros-jazzy-xacro \
+  ros-jazzy-rmw-cyclonedds-cpp \
+  npm
+```
+
+另外，运行 phase8 的 Python 解释器还需要能导入这些包：
+
+- `numpy`
+- `opencv-python` / `cv2`
+- `requests`
+- `ultralytics`
+- `fastapi`
+- `uvicorn`
+- `websockets`
+- `open3d`（可选但强烈建议，用于更好的点云滤波）
+
+## 4. Phase8 启动前置条件
+
+### 4.1 构建 ROS 2 工作区
+
+```bash
+source /opt/ros/jazzy/setup.bash
+cd /home/whispers/programme/ros2_ws
+rosdep install --from-paths src --ignore-src -r -y
+colcon build --symlink-install
+source install/setup.bash
+```
+
+### 4.2 构建 Web 前端
+
+`tactile_web_gateway` 默认会直接托管 `frontend/dist`，所以第一次运行前要先构建：
+
+```bash
+cd /home/whispers/programme/ros2_ws/src/tactile_web_bridge/frontend
+npm install
+npm run build
+```
+
+如果你在改前端，也可以在开发模式下单独跑：
+
+```bash
+cd /home/whispers/programme/ros2_ws/src/tactile_web_bridge/frontend
+npm run dev
+```
+
+### 4.3 配置多模态语义模型
+
+当前 phase8 会从 `~/.config/programme/remote_vlm.env` 读取对话/语义模型配置。一个最小例子：
+
+```bash
+mkdir -p ~/.config/programme
+cat > ~/.config/programme/remote_vlm.env <<'EOF'
+PROGRAMME_DIALOG_MODEL_ENDPOINT=http://127.0.0.1:8000/v1/chat/completions
+PROGRAMME_DIALOG_MODEL_NAME=Qwen/Qwen2.5-VL-3B-Instruct-AWQ
+PROGRAMME_DIALOG_API_KEY=EMPTY
+EOF
+```
+
+如果你用的是 DashScope 或其他 OpenAI-compatible 服务，也可以填：
+
+- `DASHSCOPE_API_KEY`
+- `DASHSCOPE_BASE_URL`
+- `DASHSCOPE_MODEL`
+- `OPENAI_API_KEY`
+- `OPENAI_BASE_URL`
+- `OPENAI_MODEL`
+
+### 4.4 启动 GraspGen ZMQ 服务
+
+当前主抓取候选后端配置为 `graspgen_zmq`，默认连接：
+
+- host: `127.0.0.1`
+- port: `5556`
+- repo: `/home/whispers/GraspGen`
+
+先确保 GraspGen 服务已经运行。按本机现有 GraspGen 仓库的 client-server 文档，一个常用启动方式是：
+
+```bash
+cd /home/whispers/GraspGen
+source .venv-cu128/bin/activate
+pip install pyzmq msgpack msgpack-numpy
+python client-server/graspgen_server.py \
+  --gripper_config /path/to/GraspGenModels/checkpoints/graspgen_robotiq_2f_140.yml \
+  --port 5556
+```
+
+如果你已经有自己的 GraspGen server 管理方式，只要保证 `127.0.0.1:5556` 可用即可。
+
+### 4.5 启动对话/VLM 服务
+
+README 不强绑定具体服务实现；你只需要保证上面 `remote_vlm.env` 里的 endpoint 已可访问。  
+当前代码默认把它当作 OpenAI-compatible 的 chat completion 接口来调用。
+
+## 5. 启动当前全链路
+
+### 5.1 推荐启动命令
+
+```bash
+source /opt/ros/jazzy/setup.bash
+cd /home/whispers/programme/ros2_ws
+source install/setup.bash
+ros2 launch tactile_bringup phase8_web_ui.launch.py
+```
+
+这条 launch 会拉起当前主链路中的关键节点，包括：
+
+- `qwen_semantic_node`
+- `detector_seg_node`
+- `cloud_filter_node`
+- `primitive_fit_node`
+- `grasp_input_cloud_node`
+- `grasp_backend_node`
+- `task_executive_node`
+- `search_target_skill_node`
+- `sim_pick_task_node`
+- `tactile_web_gateway`
+
+### 5.2 打开 Web 页面
+
+默认地址：
 
 ```text
-programme/
-├─ src/                    # 核心源码（业务模块）
-│  ├─ arm_control/         # 机械臂接口与关节/笛卡尔控制
-│  ├─ communication/       # API / MQTT 通信
-│  ├─ core/                # 系统控制、数据采集、演示管理
-│  ├─ data_management/     # 数据集构建与实验记录
-│  ├─ deep_learning/       # 模型、推理、训练与在线学习
-│  ├─ gui/                 # PyQt 图形界面
-│  ├─ motion_planning/     # 轨迹与路径规划
-│  ├─ perception/          # 视觉/触觉感知处理
-│  ├─ servo_control/       # 夹爪与力控制
-│  ├─ simulation/          # PyBullet 仿真
-│  ├─ tactile_perception/  # 触觉映射与分析
-│  └─ utils/               # 通用工具
-├─ config/                 # 配置文件与配置数据结构
-├─ scripts/                # 工程脚本（串口、仿真、手眼工具等）
-├─ examples/               # 演示样例脚本
-├─ tests/                  # 自动化测试目录（规范占位）
-├─ docs/                   # 项目文档
-├─ models/                 # URDF / mesh / 模型权重
-├─ data/                   # 数据与采集结果
-├─ robotic_arm/            # 独立机械臂 Python 包（历史兼容）
-├─ stm32_bridge/           # STM32 侧桥接代码
-├─ main.py                 # 主入口
-├─ requirements.txt        # pip 依赖
-└─ environment.yml         # conda 环境
+http://127.0.0.1:8765
 ```
 
-## 2. 环境准备
+默认网关参数来自 `tactile_web_gateway`：
 
-建议 Python 3.12。
+- host: `127.0.0.1`
+- port: `8765`
 
-### 2.1 Conda（推荐）
+## 6. 推荐操作流程
+
+1. 打开 `Control` 页，先确认后端连通。
+2. 在对话框里输入任务，例如：
+   - `抓取蓝色圆柱体`
+   - `抓右边那个蓝色圆柱`
+   - `只用平行夹爪抓取蓝色圆柱`
+3. 先用 `Review` 模式检查结构化任务是否正确；确认后再 `Execute`。
+4. 到 `Vision` 页确认目标框、候选列表和当前锁定实例是否正确。
+5. 抓取结束后，优先使用 `Reset Scene` 回到初始状态。
+
+当前配置里，`Reset Scene` 会在重置场景后自动 `Return Home`。
+
+## 7. 快速自检
+
+### 7.1 看节点是否都起来了
 
 ```bash
-conda env create -f environment.yml
-conda activate dayiprogramme312
+ros2 node list | grep -E "tactile_web_gateway|qwen_semantic_node|detector_seg_node|cloud_filter_node|primitive_fit_node|grasp_backend_node|task_executive_node|sim_pick_task_node"
 ```
 
-### 2.2 pip
+### 7.2 看 Web 网关是否可响应
 
 ```bash
-python -m venv .venv
-# Windows:
-.venv\Scripts\activate
-# macOS/Linux:
-# source .venv/bin/activate
-pip install -r requirements.txt
+curl http://127.0.0.1:8765/api/bootstrap
 ```
 
-## 3. 运行方式
-
-在仓库根目录执行。
-
-### 3.1 启动主程序（GUI + 控制流程）
+### 7.3 看语义与视觉是否有输出
 
 ```bash
-python main.py
+ros2 topic echo /qwen/semantic_task --once
+ros2 topic echo /perception/detection_result --once
+ros2 topic echo /grasp/candidate_grasp_proposals --once
 ```
 
-### 3.2 常用参数
+## 8. 现在该看哪份文档
 
-```bash
-python main.py --sensor-type 3x3 --sensor-port COM3 --servo-port COM4
-```
+- 当前系统的详细说明书：`docs/phase8_function_manual.md`
+- 文档索引：`docs/README.md`
+- Windows/VM 和 RealSense 的历史部署文档：
+  - `docs/windows_ros2_realsense_quickstart.md`
+  - `docs/windows_vm_one_click_runbook.md`
+  - `docs/windows_vm_split_phaseA.md`
+  - `docs/windows_vm_split_phaseB.md`
 
-可用参数（来自 `main.py`）：
+## 9. 说明
 
-- `--config`：配置文件路径（yaml/json）
-- `--sensor-type`：`default` 或 `3x3`
-- `--sensor-port`：传感器串口，默认 `COM3`
-- `--servo-port`：舵机串口，默认 `COM4`
-- `--demo`：指定演示模式
-- `--params`：演示参数（JSON 字符串）
-- `--log-level`：`DEBUG/INFO/WARNING/ERROR`
-- `--deep-learning`：启用深度学习模块
-- `--model-path`：模型文件路径
-- `--object-type`：目标物体类型（如 `hard_plastic`）
-
-### 3.3 仿真与工具脚本
-
-```bash
-python scripts/run_pybullet_gui.py
-python scripts/ds_servo_test.py --port COM4 --id 1
-python scripts/hand_eye_quick_calc.py
-```
-
-### 3.4 示例脚本
-
-```bash
-python examples/tactile_mapper_demo.py
-```
-
-## 4. 演示模式
-
-`core.demo_manager` 中定义了多种模式，可通过 `--demo` 启动：
-
-- `calibration`
-- `grasping`
-- `slip_detection`
-- `object_classification`
-- `force_control`
-- `learning`
-- `vector_visualization`
-- `tactile_mapping`
-
-示例：
-
-```bash
-python main.py --demo tactile_mapping --params "{\"duration\": 10}"
-```
-
-## 5. 配置说明
-
-主要配置在 `config/`：
-
-- `default_config.yaml` / `default_config.json`：默认配置
-- `demo_config.py`：配置数据结构与加载逻辑
-- `paxini_gen3_config.py`：3x3 触觉传感器相关配置
-- `simulation_config.py`：仿真配置
-- `deep_learning_config.py`：深度学习相关配置
-
-建议优先通过配置文件管理参数，不要在业务代码中硬编码端口和阈值。
-
-## 6. 开发规范
-
-- 新业务代码放在 `src/` 下对应子模块
-- 自动化测试放在 `tests/`，命名建议 `test_*.py`
-- 手动调试脚本放在 `scripts/` 或 `examples/`
-- 文档放在 `docs/`
-- 依赖优先维护在 `requirements.txt` 与 `environment.yml`
-
-仓库已提供：
-
-- `.editorconfig`：统一编码、缩进与换行
-- `.gitattributes`：统一文本 LF 行尾并标记二进制资源
-
-## 7. 已知事项
-
-- 本项目包含硬件相关代码（串口、舵机、传感器），部分功能需真实设备才能完整运行。
-- `logs/` 已加入 `.gitignore`，避免大体积日志进入版本库。
-- `main.py` 会自动将 `src/` 加入 `PYTHONPATH`，兼容当前 `src` 布局。
-
-## 8. 后续建议
-
-- 在 `tests/` 中补充可持续运行的单元测试/集成测试（尽量与硬件解耦）
-- 增加 CI（例如 GitHub Actions）进行 `lint + test`
-- 逐步补齐 `docs/`（架构图、模块接口、部署说明）
-
-## 9. ROS2 重构进展
-
-- 重构开发主线位于 `develop` 分支。
-- `ros2_ws/` 已包含 phase1~phase6.2(base) 主线包：
-- `tactile_interfaces`
-- `tactile_bringup`
-- `tactile_hardware`
-- `tactile_control`
-- `tactile_task`
-- `tactile_ui_bridge`
-- `tactile_vision`
-- `tactile_sim`
-- `main_ros2.py` 为 ROS2 入口，`main.py` 继续保留 legacy 路径。
-- 详细说明见：
-- `docs/phase1_kickoff.md`
-- `docs/phase5_task_kickoff.md`
-- `docs/phase6_vision_kickoff.md`
-- `docs/phase6_sim_base_kickoff.md`
-- `docs/phase6_sim_gazebo_kickoff.md`
-- `docs/ros2_refactor_plan.md`
+- 本 README 只覆盖当前 phase8 Web 主链路。
+- 旧 Qt UI 不再作为当前推荐入口。
+- `main.py`、PyQt、旧 `src/` 目录仍保留，但它们主要属于历史兼容路径。
