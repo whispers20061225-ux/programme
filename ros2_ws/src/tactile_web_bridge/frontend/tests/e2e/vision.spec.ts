@@ -19,14 +19,14 @@ test.describe("vision flow", () => {
     await expect(page.getByTestId("overlay-box-hovered")).toBeVisible();
   });
 
-  test("clicking a candidate stages target override and syncs back to control", async ({ page }) => {
+  test("clicking a candidate applies target override and syncs back to control", async ({ page }) => {
     await page.goto("/vision");
 
     await page.getByTestId("vision-candidate-1").click();
-    await expect(page.getByTestId("toast-stack")).toContainText("Target staged as bottle");
+    await expect(page.getByTestId("toast-stack")).toContainText("Target switched to bottle");
 
     await page.getByTestId("nav-control").click();
     await expect(page.getByTestId("confirm-target-input")).toHaveValue("bottle");
-    await expect(page.getByTestId("intervention-badge-draft")).toBeVisible();
+    await expect(page.getByTestId("intervention-badge-applied")).toBeVisible();
   });
 });
