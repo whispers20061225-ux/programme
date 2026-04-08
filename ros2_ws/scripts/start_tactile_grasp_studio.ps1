@@ -1,0 +1,143 @@
+param(
+    [string]$Distro = "Ubuntu-24.04",
+    [switch]$NoBrowser,
+    [switch]$Watchdog,
+    [switch]$EnableWatchdog
+)
+
+$ErrorActionPreference = "Stop"
+
+$runtimeDir = Join-Path $env:LOCALAPPDATA "ProgrammeWebUI"
+$watchdogPidFile = Join-Path $runtimeDir "watchdog.win.pid"
+$watchdogLog = Join-Path $runtimeDir "watchdog.log"
+$debugHelperPidFile = Join-Path $runtimeDir "debug-helper.win.pid"
+$linuxStartScript = "/home/whispers/programme/ros2_ws/scripts/start_tactile_grasp_studio.sh"
+$stopScript = Join-Path $PSScriptRoot "stop_tactile_grasp_studio.ps1"
+$debugHelperScript = Join-Path $PSScriptRoot "tactile_grasp_studio_helper.ps1"
+$debugHelperLog = Join-Path $runtimeDir "debug-helper.log"
+$frontendHealthUrl = "http://127.0.0.1:5173/control"
+$gatewayHealthUrl = "http://127.0.0.1:8765/api/bootstrap"
+$watchdogRestartThreshold = 3
+
+function Test-HttpReady {
+    param([Parameter(Mandatory = $true)][string]$Url)
+    try {
+        $response = Invoke-WebRequest -Uri $Url -UseBasicParsing -TimeoutSec 3
+        return ($response.StatusCode -ge 200 -and $response.StatusCode -lt 300)
+    } catch {
+        return $false
+    }
+}
+
+function Wait-HttpReady {
+    param(
+        [Parameter(Mandatory = $true)][string]$Url,
+        [Parameter(Mandatory = $true)][string]$Label,
+        [Parameter(Mandatory = $true)][int]$TimeoutSec
+    )
+
+    $deadline = (Get-Date).AddSeconds($TimeoutSec)
+    while ((Get-Date) -lt $deadline) {
+        if (Test-HttpReady -Url $Url) {
+            Write-Host "[start] $Label ready: $Url"
+            return
+        }
+        Start-Sleep -Seconds 1
+    }
+
+    throw "[start] $Label did not become ready: $Url"
+}
+
+function Invoke-WslStart {
+    $arguments = @("-d", $Distro, "--", $linuxStartScript, "--no-browser")
+    & wsl.exe @arguments
+    if ($LASTEXITCODE -ne 0) {
+        throw "[watchdog] start_tactile_grasp_studio.sh exited with code $LASTEXITCODE"
+    }
+}
+
+if ($Watchdog) {
+    New-Item -ItemType Directory -Path $runtimeDir -Force | Out-Null
+    Add-Content -Path $watchdogLog -Value ("[watchdog] started at {0}" -f (Get-Date -Format o))
+    $consecutiveFailures = 0
+    while ($true) {
+        $frontendOk = Test-HttpReady -Url $frontendHealthUrl
+        $gatewayOk = Test-HttpReady -Url $gatewayHealthUrl
+        if ($frontendOk -and $gatewayOk) {
+            $consecutiveFailures = 0
+        } else {
+            $consecutiveFailures += 1
+            Add-Content -Path $watchdogLog -Value (
+                "[watchdog] healthcheck failed at {0}: frontend={1} gateway={2} consecutive={3}" -f
+                (Get-Date -Format o), $frontendOk, $gatewayOk, $consecutiveFailures
+            )
+            if ($consecutiveFailures -ge $watchdogRestartThreshold) {
+                Add-Content -Path $watchdogLog -Value ("[watchdog] restarting stack at {0}" -f (Get-Date -Format o))
+                try {
+                    Invoke-WslStart
+                    Wait-HttpReady -Url $gatewayHealthUrl -Label "gateway" -TimeoutSec 60
+                    Wait-HttpReady -Url $frontendHealthUrl -Label "frontend" -TimeoutSec 30
+                    $consecutiveFailures = 0
+                } catch {
+                    Add-Content -Path $watchdogLog -Value (
+                        "[watchdog] restart failed at {0}: {1}" -f (Get-Date -Format o), $_.Exception.Message
+                    )
+                }
+            }
+        }
+        Start-Sleep -Seconds 5
+    }
+}
+
+New-Item -ItemType Directory -Path $runtimeDir -Force | Out-Null
+& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $stopScript -Distro $Distro | Out-Null
+
+Invoke-WslStart
+
+Wait-HttpReady -Url $gatewayHealthUrl -Label "gateway" -TimeoutSec 30
+Wait-HttpReady -Url $frontendHealthUrl -Label "frontend" -TimeoutSec 20
+
+$debugHelperProcess = Start-Process -FilePath "powershell.exe" `
+    -ArgumentList @(
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-Command",
+        "& `"$debugHelperScript`" -Distro `"$Distro`""
+    ) `
+    -WindowStyle Hidden `
+    -PassThru
+Set-Content -Path $debugHelperPidFile -Value ([string]$debugHelperProcess.Id) -Encoding ascii
+
+if ($EnableWatchdog) {
+    $watchdogProcess = Start-Process -FilePath "powershell.exe" `
+        -ArgumentList @(
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            $PSCommandPath,
+            "-Distro",
+            $Distro,
+            "-Watchdog"
+        ) `
+        -WindowStyle Hidden `
+        -PassThru
+    Set-Content -Path $watchdogPidFile -Value ([string]$watchdogProcess.Id) -Encoding ascii
+}
+
+if (-not $NoBrowser) {
+    Start-Process "http://127.0.0.1:5173/control" | Out-Null
+}
+
+Write-Host "[start] Tactile Grasp Studio is ready"
+Write-Host "[start] control page: http://127.0.0.1:5173/control"
+Write-Host "[start] gateway root: http://127.0.0.1:8765/"
+if ($EnableWatchdog) {
+    Write-Host "[start] watchdog pid file: $watchdogPidFile"
+    Write-Host "[start] watchdog log: $watchdogLog"
+} else {
+    Write-Host "[start] watchdog: disabled"
+}
+Write-Host "[start] debug helper pid file: $debugHelperPidFile"
+Write-Host "[start] debug helper log: $debugHelperLog"
