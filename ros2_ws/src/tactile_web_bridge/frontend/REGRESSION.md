@@ -15,7 +15,7 @@ npm run test:e2e
 ## Real Stack Manual Regression
 
 1. Build the frontend and the `tactile_web_bridge` package.
-2. Launch `phase8_web_ui.launch.py`.
+2. Launch `web_console_stack.launch.py`.
 3. Open the Web UI and verify:
    - `/api/bootstrap` returns `200` and `frontend_ready=true`
    - WebSocket reconnect overlay appears on gateway loss and disappears on recovery

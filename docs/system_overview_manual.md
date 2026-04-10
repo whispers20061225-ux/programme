@@ -45,9 +45,11 @@ flowchart LR
 
 ## 当前关键入口文件
 
+- [programme_system.launch.py](../ros2_ws/src/tactile_bringup/launch/programme_system.launch.py)
 - [tactile_grasp_studio.launch.py](../ros2_ws/src/tactile_bringup/launch/tactile_grasp_studio.launch.py)
-- [phase8_modular_grasp.launch.py](../ros2_ws/src/tactile_bringup/launch/phase8_modular_grasp.launch.py)
-- [phase8_modular_grasp.yaml](../ros2_ws/src/tactile_bringup/config/phase8_modular_grasp.yaml)
+- [programme_grasp_stack.launch.py](../ros2_ws/src/tactile_bringup/launch/programme_grasp_stack.launch.py)
+- [programme_grasp_stack.yaml](../ros2_ws/src/tactile_bringup/config/programme_grasp_stack.yaml)
+- [vision_pipeline.launch.py](../ros2_ws/src/tactile_bringup/launch/vision_pipeline.launch.py)
 - [web_gateway.py](../ros2_ws/src/tactile_web_bridge/tactile_web_bridge/web_gateway.py)
 
 ## 如果你现在在排错

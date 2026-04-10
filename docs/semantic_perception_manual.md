@@ -77,7 +77,7 @@
 
 相关配置：
 
-- [phase8_modular_grasp.yaml](../ros2_ws/src/tactile_bringup/config/phase8_modular_grasp.yaml)
+- [programme_grasp_stack.yaml](../ros2_ws/src/tactile_bringup/config/programme_grasp_stack.yaml)
 
 这意味着：
 

@@ -42,6 +42,12 @@ function candidateDisplayStatusTone(candidate: CandidateDebug | null | undefined
   return "warn";
 }
 
+function candidateIsOverlayVisible(candidate: CandidateDebug | null | undefined): boolean {
+  if (!candidate) return false;
+  if (candidateDisplayStatus(candidate) === "track_hold") return false;
+  return overlayConfidence(candidate) >= OVERLAY_CONFIDENCE_FLOOR;
+}
+
 export function VisionPage(props: VisionPageProps) {
   const [activeStream, setActiveStream] = useState<keyof StreamMap>("detection_overlay");
   const [hoveredIndex, setHoveredIndex] = useState<number | null>(null);
@@ -50,13 +56,17 @@ export function VisionPage(props: VisionPageProps) {
     const fallback = (props.state.vision.debug as { top_candidates?: CandidateDebug[] }).top_candidates;
     return Array.isArray(fallback) ? fallback : [];
   }, [props.state.vision.debug, props.state.vision.debug_candidates]);
+  const overlayCandidates = useMemo<CandidateDebug[]>(
+    () => visionCandidates.filter((candidate) => candidateIsOverlayVisible(candidate)),
+    [visionCandidates],
+  );
   const visibleCandidates = useMemo<CandidateDebug[]>(
     () => visionCandidates.filter((candidate) => overlayConfidence(candidate) >= OVERLAY_CONFIDENCE_FLOOR),
     [visionCandidates],
   );
   const hoveredCandidate = useMemo(
-    () => findCandidate(visibleCandidates, hoveredIndex),
-    [hoveredIndex, visibleCandidates],
+    () => findCandidate(overlayCandidates, hoveredIndex),
+    [hoveredIndex, overlayCandidates],
   );
 
   const overlayBoxes = useMemo<OverlayBox[]>(() => {
@@ -67,7 +77,7 @@ export function VisionPage(props: VisionPageProps) {
       boxes.set(bbox.join("-"), { bbox, label, tone });
     };
 
-    for (const candidate of visibleCandidates) {
+    for (const candidate of overlayCandidates) {
       if (!candidate.bbox_xyxy || candidate.bbox_xyxy.length !== 4) continue;
       addBox(
         candidate.bbox_xyxy,
@@ -76,7 +86,7 @@ export function VisionPage(props: VisionPageProps) {
       );
     }
 
-    if (selected?.bbox_xyxy && selected.bbox_xyxy.length === 4 && overlayConfidence(selected) >= OVERLAY_CONFIDENCE_FLOOR) {
+    if (selected?.bbox_xyxy && selected.bbox_xyxy.length === 4 && candidateIsOverlayVisible(selected)) {
       addBox(
         selected.bbox_xyxy,
         `Selected: ${candidateDisplayLabel(selected)} ${formatNumber(selected.confidence, 2)}`,
@@ -90,11 +100,7 @@ export function VisionPage(props: VisionPageProps) {
       );
     }
 
-    if (
-      hoveredCandidate?.bbox_xyxy &&
-      hoveredCandidate.bbox_xyxy.length === 4 &&
-      overlayConfidence(hoveredCandidate) >= OVERLAY_CONFIDENCE_FLOOR
-    ) {
+    if (hoveredCandidate?.bbox_xyxy && hoveredCandidate.bbox_xyxy.length === 4) {
       addBox(
         hoveredCandidate.bbox_xyxy,
         `Hover: ${candidateDisplayLabel(hoveredCandidate)} ${formatNumber(hoveredCandidate.confidence, 2)}`,
@@ -102,7 +108,7 @@ export function VisionPage(props: VisionPageProps) {
       );
     }
     return Array.from(boxes.values());
-  }, [hoveredCandidate, props.state.vision.detection, props.state.vision.selected_candidate, visibleCandidates]);
+  }, [hoveredCandidate, overlayCandidates, props.state.vision.detection, props.state.vision.selected_candidate]);
 
   const stageSrc = activeStream === "detection_overlay" ? props.streams.rgb : props.streams[activeStream];
   const stageBoxes = overlayBoxes;

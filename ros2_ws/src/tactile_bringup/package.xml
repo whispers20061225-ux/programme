@@ -2,7 +2,7 @@
 <package format="3">
   <name>tactile_bringup</name>
   <version>0.1.0</version>
-  <description>Bringup and staged launch files for phase 1-6.2 ROS2 migration.</description>
+  <description>Bringup and orchestration launch files for the Programme system, tactile hardware path, and supporting debug stacks.</description>
   <maintainer email="whisp@users.noreply.github.com">whisp</maintainer>
   <license>MIT</license>
 

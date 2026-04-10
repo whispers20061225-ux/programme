@@ -1434,6 +1434,13 @@ class TactileWebGateway(Node):
         self.declare_parameter("grasp_backend_debug_topic", "/grasp/backend_debug")
         self.declare_parameter("grasp_overlay_topic", "/grasp/ggcnn/grasp_overlay")
         self.declare_parameter("tactile_topic", "/tactile/raw")
+        self.declare_parameter("tactile_mode_service", "/tactile/use_hardware")
+        self.declare_parameter("tactile_tare_service", "/tactile/tare")
+        self.declare_parameter("tactile_clear_tare_service", "/tactile/clear_tare")
+        self.declare_parameter("tactile_freeze_warn_repeats", 18)
+        self.declare_parameter("tactile_freeze_warn_sec", 1.4)
+        self.declare_parameter("tactile_freeze_force_threshold", 1.0)
+        self.declare_parameter("gripper_profile_topic", "/control/gripper/profile_json")
         self.declare_parameter("health_topic", "/system/health")
         self.declare_parameter("arm_state_topic", "/arm/state")
         self.declare_parameter("execute_task_action", "/task/execute_task")
@@ -1466,6 +1473,7 @@ class TactileWebGateway(Node):
             [3.0, -58.0, 89.405064, 96.0, 0.0, -68.754936],
         )
         self.declare_parameter("return_home_duration_ms", 3500)
+        self.declare_parameter("return_home_request_timeout_ms", 12000)
         self.declare_parameter("return_home_wait_for_completion", True)
         # Startup-home ownership belongs to the motion/search layer, not the web gateway.
         self.declare_parameter("startup_prepare_home", False)
@@ -1519,6 +1527,21 @@ class TactileWebGateway(Node):
         )
         self.grasp_overlay_topic = str(self.get_parameter("grasp_overlay_topic").value)
         self.tactile_topic = str(self.get_parameter("tactile_topic").value)
+        self.tactile_mode_service = str(self.get_parameter("tactile_mode_service").value)
+        self.tactile_tare_service = str(self.get_parameter("tactile_tare_service").value)
+        self.tactile_clear_tare_service = str(
+            self.get_parameter("tactile_clear_tare_service").value
+        )
+        self.tactile_freeze_warn_repeats = max(
+            6, int(self.get_parameter("tactile_freeze_warn_repeats").value)
+        )
+        self.tactile_freeze_warn_sec = max(
+            0.5, float(self.get_parameter("tactile_freeze_warn_sec").value)
+        )
+        self.tactile_freeze_force_threshold = max(
+            0.0, float(self.get_parameter("tactile_freeze_force_threshold").value)
+        )
+        self.gripper_profile_topic = str(self.get_parameter("gripper_profile_topic").value)
         self.health_topic = str(self.get_parameter("health_topic").value)
         self.arm_state_topic = str(self.get_parameter("arm_state_topic").value)
         self.execute_task_action = str(self.get_parameter("execute_task_action").value)
@@ -1591,6 +1614,10 @@ class TactileWebGateway(Node):
         ]
         self.return_home_duration_ms = max(
             500, int(self.get_parameter("return_home_duration_ms").value)
+        )
+        self.return_home_request_timeout_ms = max(
+            self.return_home_duration_ms,
+            int(self.get_parameter("return_home_request_timeout_ms").value),
         )
         self.return_home_wait_for_completion = bool(
             self.get_parameter("return_home_wait_for_completion").value
@@ -1697,6 +1724,11 @@ class TactileWebGateway(Node):
         self.control_arm_enable_client = self.create_client(
             SetBool, self.control_arm_enable_service
         )
+        self.tactile_mode_client = self.create_client(SetBool, self.tactile_mode_service)
+        self.tactile_tare_client = self.create_client(Trigger, self.tactile_tare_service)
+        self.tactile_clear_tare_client = self.create_client(
+            Trigger, self.tactile_clear_tare_service
+        )
         self.control_arm_move_joints_client = self.create_client(
             MoveArmJoints, self.control_arm_move_joints_service
         )
@@ -1736,6 +1768,7 @@ class TactileWebGateway(Node):
         self.create_subscription(String, self.grasp_backend_debug_topic, self._on_backend_debug, qos_reliable)
         self.create_subscription(Image, self.grasp_overlay_topic, self._on_grasp_overlay, qos_sensor)
         self.create_subscription(TactileRaw, self.tactile_topic, self._on_tactile, qos_sensor)
+        self.create_subscription(String, self.gripper_profile_topic, self._on_gripper_profile, qos_sensor)
         self.create_subscription(SystemHealth, self.health_topic, self._on_health, qos_reliable)
         self.create_subscription(ArmState, self.arm_state_topic, self._on_arm_state, qos_reliable)
         self.create_subscription(TFMessage, self.scene_pose_info_topic, self._on_scene_pose_info, qos_reliable)
@@ -1773,6 +1806,12 @@ class TactileWebGateway(Node):
         self._target_locked = False
         self._pick_active = False
         self._tactile: dict[str, Any] = {"updated_at": 0.0}
+        self._tactile_tare = {"active": False, "updated_at": 0.0, "message": ""}
+        self._tactile_last_raw_frame_hex = ""
+        self._tactile_raw_static_since = 0.0
+        self._tactile_raw_static_repeats = 0
+        self._tactile_freeze_warning = False
+        self._gripper_profile: dict[str, Any] = {"updated_at": 0.0}
         self._arm_state: dict[str, Any] = {"updated_at": 0.0}
         self._health_by_node: dict[str, dict[str, Any]] = {}
         self._scene_target_pose: dict[str, Any] = {
@@ -2135,11 +2174,79 @@ class TactileWebGateway(Node):
             "forces_fx": [float(item) for item in msg.forces_fx],
             "forces_fy": [float(item) for item in msg.forces_fy],
             "forces_fz": [float(item) for item in msg.forces_fz],
+            "torques_tx": [float(item) for item in getattr(msg, "torques_tx", [])],
+            "torques_ty": [float(item) for item in getattr(msg, "torques_ty", [])],
+            "torques_tz": [float(item) for item in getattr(msg, "torques_tz", [])],
+            "total_fx": float(getattr(msg, "total_fx", 0.0) or 0.0),
+            "total_fy": float(getattr(msg, "total_fy", 0.0) or 0.0),
+            "total_fz": float(getattr(msg, "total_fz", 0.0) or 0.0),
+            "contact_active": bool(getattr(msg, "contact_active", False)),
+            "contact_score": float(getattr(msg, "contact_score", 0.0) or 0.0),
+            "baseline_ready": bool(getattr(msg, "baseline_ready", False)),
+            "sensor_layout": str(getattr(msg, "sensor_layout", "") or ""),
+            "requested_mode": str(getattr(msg, "requested_mode", "") or ""),
+            "active_mode": str(getattr(msg, "active_mode", "") or ""),
+            "source_name": str(getattr(msg, "source_name", "") or ""),
+            "source_connected": bool(getattr(msg, "source_connected", False)),
+            "device_addr": int(getattr(msg, "device_addr", 0) or 0),
+            "function_code": int(getattr(msg, "function_code", 0) or 0),
+            "start_addr": int(getattr(msg, "start_addr", 0) or 0),
+            "returned_data_len_hint": int(getattr(msg, "returned_data_len_hint", 0) or 0),
+            "frame_len_declared": int(getattr(msg, "frame_len_declared", 0) or 0),
+            "payload_len_observed": int(getattr(msg, "payload_len_observed", 0) or 0),
+            "payload_value_count": int(getattr(msg, "payload_value_count", 0) or 0),
+            "transport_rate_hz": float(getattr(msg, "transport_rate_hz", 0.0) or 0.0),
+            "publish_rate_hz": float(getattr(msg, "publish_rate_hz", 0.0) or 0.0),
+            "lrc_ok": bool(getattr(msg, "lrc_ok", False)),
+            "parser_state": str(getattr(msg, "parser_state", "") or ""),
+            "mapping_state": str(getattr(msg, "mapping_state", "") or ""),
+            "status_text": str(getattr(msg, "status_text", "") or ""),
+            "raw_frame_hex": str(getattr(msg, "raw_frame_hex", "") or ""),
             "updated_at": _now_sec(),
             "stamp_sec": _msg_stamp_sec(msg),
         }
+        transition_event: Optional[dict[str, Any]] = None
         with self._lock:
+            previous_warning = bool(self._tactile_freeze_warning)
+            tactile = self._apply_tactile_runtime_state_locked(tactile)
             self._tactile = tactile
+            self._state_version += 1
+            if self._tactile_freeze_warning != previous_warning:
+                if self._tactile_freeze_warning:
+                    transition_event = {
+                        "level": "warn",
+                        "message": (
+                            "tactile raw frame appears static while contact remains active"
+                        ),
+                        "data": {
+                            "duration_sec": float(tactile.get("freeze_duration_sec", 0.0) or 0.0),
+                            "repeat_count": int(tactile.get("freeze_repeat_count", 0) or 0),
+                        },
+                        "feedback": True,
+                    }
+                else:
+                    transition_event = {
+                        "level": "info",
+                        "message": "tactile raw frame resumed changing",
+                        "data": {},
+                        "feedback": False,
+                    }
+        if transition_event is not None:
+            self._record_event(
+                "tactile",
+                transition_event["level"],
+                transition_event["message"],
+                data=transition_event["data"],
+                feedback=transition_event["feedback"],
+            )
+
+    def _on_gripper_profile(self, msg: String) -> None:
+        parsed = _safe_json_loads(str(msg.data or ""))
+        if not isinstance(parsed, dict):
+            parsed = {"raw": str(msg.data or "")}
+        parsed["updated_at"] = _now_sec()
+        with self._lock:
+            self._gripper_profile = parsed
             self._state_version += 1
 
     def _on_health(self, msg: SystemHealth) -> None:
@@ -3450,7 +3557,12 @@ class TactileWebGateway(Node):
         if publish_empty_task:
             clear_msg = SemanticTask()
             clear_msg.header.stamp = self.get_clock().now().to_msg()
-            clear_msg.task = self.default_task
+            clear_msg.task = ""
+            clear_msg.target_label = ""
+            clear_msg.target_hint = ""
+            clear_msg.prompt_text = ""
+            clear_msg.raw_json = ""
+            clear_msg.need_human_confirm = False
             clear_msg.reason = str(reason or "semantic context cleared")
             self.semantic_override_pub.publish(clear_msg)
 
@@ -3867,6 +3979,147 @@ class TactileWebGateway(Node):
         if not ok or result is None:
             return False, error or "service call failed"
         return bool(result.success), str(result.message or "")
+
+    def set_tactile_mode(self, use_hardware: bool) -> tuple[bool, str, dict[str, Any]]:
+        request = SetBool.Request()
+        request.data = bool(use_hardware)
+        ok, error, result = self._call_service_request(
+            self.tactile_mode_client,
+            request,
+            timeout_sec=3.0,
+        )
+        if not ok or result is None:
+            message = error or "tactile mode service call failed"
+            return False, message, self.build_state()
+
+        success = bool(result.success)
+        message = str(result.message or "")
+        if success:
+            with self._lock:
+                self._clear_tactile_tare_locked()
+                self._reset_tactile_freeze_tracking_locked()
+                self._state_version += 1
+            self._record_event(
+                "tactile",
+                "info",
+                f"tactile mode switched to {'hardware' if use_hardware else 'simulation'}",
+                data={"requested_mode": "hardware" if use_hardware else "simulation"},
+                feedback=True,
+            )
+        return success, message, self.build_state()
+
+    def tare_tactile(self) -> tuple[bool, str, dict[str, Any]]:
+        ok, message = self._call_trigger(self.tactile_tare_client, timeout_sec=4.0)
+        if ok:
+            with self._lock:
+                self._set_tactile_tare_locked(active=True, message=message)
+                self._state_version += 1
+            self._record_event(
+                "tactile",
+                "info",
+                "tactile tare captured",
+                data={"message": message},
+                feedback=True,
+            )
+        return ok, message, self.build_state()
+
+    def clear_tactile_tare(self) -> tuple[bool, str, dict[str, Any]]:
+        ok, message = self._call_trigger(self.tactile_clear_tare_client, timeout_sec=4.0)
+        if ok:
+            with self._lock:
+                self._clear_tactile_tare_locked()
+                self._state_version += 1
+            self._record_event(
+                "tactile",
+                "info",
+                "tactile tare cleared",
+                data={"message": message},
+                feedback=False,
+            )
+        return ok, message, self.build_state()
+
+    def _set_tactile_tare_locked(self, *, active: bool, message: str) -> None:
+        self._tactile_tare = {
+            "active": bool(active),
+            "updated_at": _now_sec(),
+            "message": str(message or ""),
+        }
+        if isinstance(self._tactile, dict):
+            self._tactile["tare_active"] = bool(active)
+            self._tactile["tare_updated_at"] = float(self._tactile_tare["updated_at"])
+            self._tactile["tare_message"] = str(self._tactile_tare["message"])
+
+    def _clear_tactile_tare_locked(self) -> None:
+        self._set_tactile_tare_locked(active=False, message="")
+
+    def _reset_tactile_freeze_tracking_locked(self) -> None:
+        self._tactile_last_raw_frame_hex = ""
+        self._tactile_raw_static_since = 0.0
+        self._tactile_raw_static_repeats = 0
+        self._tactile_freeze_warning = False
+        if isinstance(self._tactile, dict):
+            self._tactile["freeze_warning"] = False
+            self._tactile["freeze_duration_sec"] = 0.0
+            self._tactile["freeze_repeat_count"] = 0
+
+    def _apply_tactile_runtime_state_locked(
+        self, tactile: dict[str, Any]
+    ) -> dict[str, Any]:
+        now_sec = float(tactile.get("updated_at", _now_sec()) or _now_sec())
+        raw_frame_hex = str(tactile.get("raw_frame_hex", "") or "")
+        active_mode = str(tactile.get("active_mode", "") or "").lower()
+        source_connected = bool(tactile.get("source_connected", False))
+        contact_active = bool(tactile.get("contact_active", False))
+        total_fz = float(tactile.get("total_fz", 0.0) or 0.0)
+
+        static_duration_sec = 0.0
+        if active_mode == "hardware" and source_connected and raw_frame_hex:
+            if raw_frame_hex == self._tactile_last_raw_frame_hex:
+                if self._tactile_raw_static_since <= 0.0:
+                    self._tactile_raw_static_since = now_sec
+                self._tactile_raw_static_repeats += 1
+            else:
+                self._tactile_last_raw_frame_hex = raw_frame_hex
+                self._tactile_raw_static_since = now_sec
+                self._tactile_raw_static_repeats = 0
+            static_duration_sec = max(0.0, now_sec - self._tactile_raw_static_since)
+            static_under_load = contact_active or abs(total_fz) >= self.tactile_freeze_force_threshold
+            self._tactile_freeze_warning = bool(
+                static_under_load
+                and self._tactile_raw_static_repeats >= self.tactile_freeze_warn_repeats
+                and static_duration_sec >= self.tactile_freeze_warn_sec
+            )
+        else:
+            self._reset_tactile_freeze_tracking_locked()
+
+        tactile["tare_active"] = bool(self._tactile_tare.get("active", False))
+        tactile["tare_updated_at"] = float(self._tactile_tare.get("updated_at", 0.0) or 0.0)
+        tactile["tare_message"] = str(self._tactile_tare.get("message", "") or "")
+        tactile["freeze_warning"] = bool(self._tactile_freeze_warning)
+        tactile["freeze_duration_sec"] = float(static_duration_sec)
+        tactile["freeze_repeat_count"] = int(self._tactile_raw_static_repeats)
+        return tactile
+
+    def _build_tactile_freeze_issue(
+        self, tactile: dict[str, Any]
+    ) -> Optional[dict[str, Any]]:
+        if not bool(tactile.get("freeze_warning", False)):
+            return None
+        duration_sec = float(tactile.get("freeze_duration_sec", 0.0) or 0.0)
+        repeat_count = int(tactile.get("freeze_repeat_count", 0) or 0)
+        return {
+            "node_name": "tactile_web_gateway",
+            "healthy": False,
+            "level": 1,
+            "message": (
+                f"tactile raw frame static for {duration_sec:.1f}s "
+                f"({repeat_count} repeats) while contact remains active"
+            ),
+            "cpu_percent": 0.0,
+            "memory_percent": 0.0,
+            "updated_at": _now_sec(),
+            "stamp_sec": float(tactile.get("stamp_sec", 0.0) or 0.0),
+        }
 
     def _current_task_goal_payload(self) -> dict[str, Any]:
         with self._lock:
@@ -4374,6 +4627,7 @@ class TactileWebGateway(Node):
             else:
                 move_timeout_sec = max(
                     4.0,
+                    float(self.return_home_request_timeout_ms) / 1000.0 + 2.0,
                     float(self.return_home_duration_ms) / 1000.0
                     + (3.0 if self.return_home_wait_for_completion else 1.5),
                 )
@@ -4392,6 +4646,14 @@ class TactileWebGateway(Node):
         self.get_logger().warn(f"{reason}: {last_error}")
         return False, last_error
 
+    def _return_home_trigger_timeout_sec(self) -> float:
+        return max(
+            6.0,
+            float(self.return_home_request_timeout_ms) / 1000.0 + 2.0,
+            float(self.return_home_duration_ms) / 1000.0
+            + (3.0 if self.return_home_wait_for_completion else 1.5),
+        )
+
     def _request_stop_search_sweep(
         self,
         *,
@@ -4405,6 +4667,42 @@ class TactileWebGateway(Node):
         if not ok:
             self.get_logger().warn(f"{reason}: stop search sweep failed: {message}")
         return ok, message
+
+    def _set_scene_reset_idle_state(self, *, message: str = "scene reset") -> None:
+        updated_at = _now_sec()
+        with self._lock:
+            self._grasp_proposals = {
+                "updated_at": 0.0,
+                "proposals": [],
+                "selected_index": 0,
+                "count": 0,
+            }
+            self._grasp_backend_debug = {"updated_at": 0.0}
+            self._target_locked = False
+            self._pick_active = False
+            self._last_target_locked = False
+            self._last_pick_active = False
+            self._last_pick_status_phase = "idle"
+            self._last_task_execution_phase = "idle"
+            self._last_pick_progress_key = ""
+            self._pick_status = {
+                "phase": "idle",
+                "message": str(message or "scene reset"),
+                "require_user_confirmation": False,
+                "target_locked": False,
+                "pick_armed": False,
+                "executing": False,
+                "completed": False,
+                "has_latched_target_pose": False,
+                "raw": "",
+                "updated_at": updated_at,
+            }
+            self._task_execution_status = {
+                "phase": "idle",
+                "message": str(message or "scene reset"),
+                "updated_at": updated_at,
+            }
+            self._state_version += 1
 
     def _startup_prepare_home_worker(self) -> None:
         time.sleep(self.startup_prepare_home_delay_sec)
@@ -4556,11 +4854,7 @@ class TactileWebGateway(Node):
             reason="return home request",
             timeout_sec=1.5,
         )
-        trigger_timeout_sec = max(
-            6.0,
-            float(self.return_home_duration_ms) / 1000.0
-            + (3.0 if self.return_home_wait_for_completion else 1.5),
-        )
+        trigger_timeout_sec = self._return_home_trigger_timeout_sec()
         home_ok, home_message = self._call_trigger(
             self.return_home_client, timeout_sec=trigger_timeout_sec
         )
@@ -4592,6 +4886,12 @@ class TactileWebGateway(Node):
 
     def reset_scene(self) -> tuple[bool, str, dict[str, Any]]:
         cancel_ok, cancel_message = self._interrupt_active_execution(reason="scene reset")
+        self._clear_semantic_context(
+            reason="scene reset",
+            clear_dialog_focus=False,
+            clear_prompt_text=False,
+            publish_empty_task=True,
+        )
         stop_ok, stop_message = self._request_stop_search_sweep(
             reason="scene reset request",
             timeout_sec=1.5,
@@ -4601,73 +4901,45 @@ class TactileWebGateway(Node):
         session_ok = True
         session_message = "skipped"
         if self.scene_reset_return_home_after_reset:
-            trigger_timeout_sec = max(
-                6.0,
-                float(self.return_home_duration_ms) / 1000.0
-                + (3.0 if self.return_home_wait_for_completion else 1.5),
-            )
+            trigger_timeout_sec = self._return_home_trigger_timeout_sec()
             home_ok, home_message = self._call_trigger(
                 self.return_home_client, timeout_sec=trigger_timeout_sec
             )
             if not home_ok:
+                session_ok, session_message = self._call_trigger(
+                    self.reset_pick_client,
+                    timeout_sec=4.0,
+                )
                 home_ok, home_message = self._request_return_home_motion(
                     reason="scene reset home prepare",
                     retries=3,
                     retry_delay_sec=0.5,
                 )
-            session_ok, session_message = self._call_trigger(self.reset_pick_client, timeout_sec=1.5)
+            else:
+                session_message = "handled by return home"
         else:
             session_ok, session_message = self._call_trigger(
-                self.reset_pick_client, timeout_sec=1.5
+                self.reset_pick_client, timeout_sec=4.0
             )
         world_ok = True
         world_message = "skipped"
         if self.scene_reset_use_world_reset:
-            world_ok, world_message = self._call_world_reset(model_only=True, timeout_sec=3.0)
+            world_ok, world_message = self._call_world_reset(model_only=True, timeout_sec=4.5)
         pose_ok, pose_message = self._call_scene_set_pose(timeout_sec=3.0)
         if (world_ok or pose_ok) and self.scene_reset_delay_sec > 0.0:
             time.sleep(self.scene_reset_delay_sec)
 
         scene_ok = bool(world_ok or pose_ok)
         ok = bool(scene_ok and session_ok and home_ok)
-        with self._lock:
-            restore_waiting_execute = bool(self._target_locked)
-            self._grasp_proposals = {
-                "updated_at": 0.0,
-                "proposals": [],
-                "selected_index": 0,
-                "count": 0,
-            }
-            self._grasp_backend_debug = {"updated_at": 0.0}
-            if restore_waiting_execute:
-                self._pick_status = {
-                    "phase": "waiting_execute",
-                    "message": "target locked; waiting for explicit execute command",
-                    "updated_at": _now_sec(),
-                }
-                self._task_execution_status = {
-                    "phase": "waiting_execute",
-                    "message": "target locked; waiting for explicit execute command",
-                    "updated_at": _now_sec(),
-                }
-            else:
-                self._pick_status = {
-                    "phase": "idle",
-                    "message": "scene reset",
-                    "updated_at": _now_sec(),
-                }
-                self._task_execution_status = {
-                    "phase": "idle",
-                    "message": "scene reset",
-                    "updated_at": _now_sec(),
-                }
-            self._pick_active = False
-            self._state_version += 1
-        detail_parts = [f"task interrupt: {cancel_message}", f"stop sweep: {stop_message}"]
-        detail_parts.append(
-            f"{'return home' if self.scene_reset_return_home_after_reset else 'pick reset'}: "
-            f"{session_message}"
-        )
+        self._set_scene_reset_idle_state(message="scene reset")
+        detail_parts = [
+            f"task interrupt: {cancel_message}",
+            "semantic reset: cleared",
+            f"stop sweep: {stop_message}",
+            f"pick reset: {session_message}",
+        ]
+        if self.scene_reset_return_home_after_reset:
+            detail_parts.append(f"return home: {home_message}")
         detail_parts.append(f"world reset: {world_message}")
         detail_parts.append(f"target pose: {pose_message}")
         message = " | ".join(part for part in detail_parts if part)
@@ -4700,6 +4972,7 @@ class TactileWebGateway(Node):
             proposals = copy.deepcopy(self._grasp_proposals)
             backend_debug = copy.deepcopy(self._grasp_backend_debug)
             tactile = copy.deepcopy(self._tactile)
+            gripper_profile = copy.deepcopy(self._gripper_profile)
             arm_state = copy.deepcopy(self._arm_state)
             intervention = copy.deepcopy(self._intervention)
             pending_execute = copy.deepcopy(self._pending_execute)
@@ -4724,6 +4997,10 @@ class TactileWebGateway(Node):
             for item in health_items
             if (not item.get("healthy", True)) or int(item.get("level", 0)) > 0
         ]
+        tactile_freeze_issue = self._build_tactile_freeze_issue(tactile)
+        if tactile_freeze_issue is not None:
+            health_items = [tactile_freeze_issue, *health_items]
+            health_issues = [tactile_freeze_issue, *health_issues]
 
         vision_updated_at = max(
             float(detection.get("updated_at", 0.0)),
@@ -4805,6 +5082,7 @@ class TactileWebGateway(Node):
                     "updated_at": execution_updated_at,
                 },
                 "tactile": tactile,
+                "gripper_profile": gripper_profile,
                 "health": {
                     "healthy": not health_issues,
                     "issues": health_issues,
@@ -5024,6 +5302,46 @@ def create_app(bridge: TactileWebGateway) -> Any:
     @app.post("/api/debug/open-views")
     async def post_open_debug_views() -> JSONResponse:
         ok, message, state = bridge.open_debug_views()
+        status_code = 200 if ok else 409
+        return JSONResponse(
+            {"ok": ok, "message": message, "state": state},
+            status_code=status_code,
+        )
+
+    @app.post("/api/tactile/mode")
+    async def post_tactile_mode(payload: dict[str, Any]) -> JSONResponse:
+        mode = str(payload.get("mode", "") or "").strip().lower()
+        use_hardware_value = payload.get("use_hardware")
+        if isinstance(use_hardware_value, bool):
+            use_hardware = use_hardware_value
+        elif mode in {"hardware", "real"}:
+            use_hardware = True
+        elif mode in {"simulation", "sim", "virtual"}:
+            use_hardware = False
+        else:
+            raise HTTPException(
+                status_code=400,
+                detail="mode must be hardware/real or simulation/virtual",
+            )
+        ok, message, state = bridge.set_tactile_mode(use_hardware)
+        status_code = 200 if ok else 503
+        return JSONResponse(
+            {"ok": ok, "message": message, "state": state},
+            status_code=status_code,
+        )
+
+    @app.post("/api/tactile/tare")
+    async def post_tactile_tare() -> JSONResponse:
+        ok, message, state = bridge.tare_tactile()
+        status_code = 200 if ok else 409
+        return JSONResponse(
+            {"ok": ok, "message": message, "state": state},
+            status_code=status_code,
+        )
+
+    @app.post("/api/tactile/tare/clear")
+    async def post_tactile_tare_clear() -> JSONResponse:
+        ok, message, state = bridge.clear_tactile_tare()
         status_code = 200 if ok else 409
         return JSONResponse(
             {"ok": ok, "message": message, "state": state},

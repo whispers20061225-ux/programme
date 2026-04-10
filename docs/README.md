@@ -43,7 +43,7 @@
 - [Phase 3 Control Kickoff](phase3_control_kickoff.md)
 - [Phase 4 UI Bridge Kickoff](phase4_ui_bridge_kickoff.md)
 - [Phase 5 Task Kickoff](phase5_task_kickoff.md)
-- [Phase 6 Vision Kickoff](phase6_vision_kickoff.md)
+- [Phase 6 Vision Kickoff](vision_pipeline_kickoff.md)
 - [Phase 6 Sim Base Kickoff](phase6_sim_base_kickoff.md)
 - [Phase 6 Sim Gazebo Kickoff](phase6_sim_gazebo_kickoff.md)
 - [Changelog](../CHANGELOG.md)

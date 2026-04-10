@@ -8,8 +8,11 @@ import {
   postExecute,
   postOpenDebugViews,
   postOverride,
+  postClearTactileTare,
   postResetScene,
   postReplan,
+  postTactileMode,
+  postTactileTare,
   postReturnHome,
 } from "./api";
 import { ControlPage } from "./ControlPage";
@@ -21,6 +24,7 @@ import {
   createFrontendEvent,
   DEFAULT_STATE,
   type InterventionState,
+  type BusyAction,
   getErrorMessage,
   parseConstraintsInput,
   semanticToDraft,
@@ -40,9 +44,7 @@ function App() {
   const { state, streams, connectionPhase, loading, setState, waitForState } = useBackendState();
   const [draft, setDraft] = useState<SemanticDraft>(() => semanticToDraft(DEFAULT_STATE.semantic));
   const [draftDirty, setDraftDirty] = useState(false);
-  const [busyAction, setBusyAction] = useState<
-    "dialog" | "execute" | "replan" | "dialog-reset" | "return-home" | "scene-reset" | "debug-open" | null
-  >(null);
+  const [busyAction, setBusyAction] = useState<BusyAction>(null);
   const [toasts, setToasts] = useState<ToastItem[]>([]);
   const [frontendEvents, setFrontendEvents] = useState<UiEvent[]>([]);
   const [backendEventFloorId, setBackendEventFloorId] = useState(0);
@@ -324,6 +326,63 @@ function App() {
     }
   }, [pushFrontendEvent, pushToast, setState]);
 
+  const handleSetTactileMode = useCallback(async (useHardware: boolean) => {
+    setBusyAction("tactile-mode");
+    try {
+      setState(await postTactileMode(useHardware));
+      pushToast(
+        "info",
+        "Tactile",
+        useHardware ? "Real tactile link requested." : "Virtual tactile link requested.",
+      );
+      pushFrontendEvent(
+        "tactile",
+        "info",
+        `tactile mode requested: ${useHardware ? "hardware" : "simulation"}`,
+      );
+    } catch (error) {
+      pushToast("error", "Tactile", getErrorMessage(error, "Failed to switch tactile mode."));
+      pushFrontendEvent("tactile", "error", "tactile mode switch failed", {
+        mode: useHardware ? "hardware" : "simulation",
+        message: getErrorMessage(error, "tactile mode switch failed"),
+      });
+    } finally {
+      setBusyAction(null);
+    }
+  }, [pushFrontendEvent, pushToast, setState]);
+
+  const handleTactileTare = useCallback(async () => {
+    setBusyAction("tactile-tare");
+    try {
+      setState(await postTactileTare());
+      pushToast("info", "Tactile", "Tare captured from the current tactile frame.");
+      pushFrontendEvent("tactile", "info", "tactile tare captured");
+    } catch (error) {
+      pushToast("error", "Tactile", getErrorMessage(error, "Failed to capture tactile tare."));
+      pushFrontendEvent("tactile", "error", "tactile tare failed", {
+        message: getErrorMessage(error, "tactile tare failed"),
+      });
+    } finally {
+      setBusyAction(null);
+    }
+  }, [pushFrontendEvent, pushToast, setState]);
+
+  const handleClearTactileTare = useCallback(async () => {
+    setBusyAction("tactile-clear-tare");
+    try {
+      setState(await postClearTactileTare());
+      pushToast("info", "Tactile", "Tare cleared.");
+      pushFrontendEvent("tactile", "info", "tactile tare cleared");
+    } catch (error) {
+      pushToast("error", "Tactile", getErrorMessage(error, "Failed to clear tactile tare."));
+      pushFrontendEvent("tactile", "error", "clear tactile tare failed", {
+        message: getErrorMessage(error, "clear tactile tare failed"),
+      });
+    } finally {
+      setBusyAction(null);
+    }
+  }, [pushFrontendEvent, pushToast, setState]);
+
   const handleClearLogs = useCallback(() => {
     const latestBackendId = state.logs.events.length > 0 ? state.logs.events[state.logs.events.length - 1].id : 0;
     setBackendEventFloorId(latestBackendId);
@@ -384,7 +443,19 @@ function App() {
           <Route path="/" element={<Navigate to="/control" replace />} />
           <Route path="/control" element={<ControlPage state={state} streams={streams} draft={draft} draftDirty={draftDirty} busyAction={busyAction} chatMessages={dialogMessages} dialogMode={dialogState.mode} dialogReplyLanguage={dialogState.reply_language} dialogStatusLabel={dialogState.status_label || dialogState.status} dialogPendingAutoExecute={Boolean(dialogState.pending_auto_execute)} onTaskChange={updateTask} onTargetChange={updateTarget} onGripperChange={updateGripper} onConstraintsChange={updateConstraints} onDialogSubmit={handleDialogSubmit} onDialogModeChange={handleDialogModeChange} onDialogReplyLanguageChange={handleDialogReplyLanguageChange} onDialogReset={handleDialogReset} onExecute={handleExecute} onReplan={handleReplan} onReturnHome={handleReturnHome} onResetScene={handleResetScene} onOpenDebugViews={handleOpenDebugViews} />} />
         <Route path="/vision" element={<VisionPage state={state} streams={streams} onChooseCandidate={setVisionOverride} />} />
-          <Route path="/tactile" element={<TactilePage state={state} />} />
+          <Route
+            path="/tactile"
+            element={
+              <TactilePage
+                state={state}
+                modeBusy={busyAction === "tactile-mode"}
+                tareBusy={busyAction === "tactile-tare" || busyAction === "tactile-clear-tare"}
+                onSetMode={handleSetTactileMode}
+                onTare={handleTactileTare}
+                onClearTare={handleClearTactileTare}
+              />
+            }
+          />
           <Route path="/logs" element={<LogsPage state={state} interventionState={interventionState} visibleBackendEvents={visibleBackendEvents} frontendEvents={frontendEvents} onClear={handleClearLogs} onExport={handleExportLogs} />} />
         </Routes>
       </main>

@@ -488,7 +488,12 @@ class ArmSimDriverNode(Node):
             return True, "trajectory completed"
 
         result_future = goal_handle.get_result_async()
-        wrapped, error = self._wait_for_future(result_future, timeout_sec=1.0)
+        result_wait_timeout_sec = max(
+            self.trajectory_result_timeout_sec,
+            execution_timeout_sec,
+            3.0,
+        )
+        wrapped, error = self._wait_for_future(result_future, timeout_sec=result_wait_timeout_sec)
         detail = ""
         if wrapped is not None:
             result = wrapped.result
@@ -799,4 +804,3 @@ def main(args=None) -> None:
 
 if __name__ == "__main__":
     main()
-

@@ -101,7 +101,7 @@
 
 默认对话模型参数可以在这里看到：
 
-- [phase8_modular_grasp.yaml](../ros2_ws/src/tactile_bringup/config/phase8_modular_grasp.yaml)
+- [programme_grasp_stack.yaml](../ros2_ws/src/tactile_bringup/config/programme_grasp_stack.yaml)
 - [web_gateway.py](../ros2_ws/src/tactile_web_bridge/tactile_web_bridge/web_gateway.py)
 
 ## 你应该怎么和它对话

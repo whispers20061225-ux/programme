@@ -21,6 +21,7 @@ setup(
     entry_points={
         "console_scripts": [
             "arm_control_node = tactile_control.arm_control_node:main",
+            "grasp_profile_node = tactile_control.grasp_profile_node:main",
         ],
     },
 )

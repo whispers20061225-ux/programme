@@ -186,6 +186,7 @@ private:
     std::optional<ExternalProposalMetadata> external_metadata;
     double first_round_score{0.0};
     double second_round_score{0.0};
+    double second_round_preplan_score{0.0};
     int second_round_hits{0};
     int second_round_samples{0};
     bool second_round_has_hit{false};
@@ -207,12 +208,22 @@ private:
     double deviation_score{0.0};
     double joint_score{0.0};
     double pregrasp_score{0.0};
+    double preplan_score{0.0};
     double best_sample_quality{0.0};
     int hits{0};
     int samples{0};
     bool has_hit{false};
     std::vector<int> hits_per_cluster;
     std::vector<std::size_t> top_hit_sample_indices;
+  };
+
+  struct ExternalSecondRoundPreplanResult
+  {
+    bool has_hit{false};
+    int hits{0};
+    int samples{0};
+    double score{0.0};
+    std::vector<std::size_t> ranked_success_variant_indices;
   };
 
   struct ExternalCandidateEvaluationResult
@@ -349,6 +360,11 @@ private:
     this->declare_parameter<double>("external_second_round_deviation_weight", 0.25);
     this->declare_parameter<double>("external_second_round_joint_weight", 0.15);
     this->declare_parameter<double>("external_second_round_pregrasp_weight", 0.15);
+    this->declare_parameter<bool>("external_second_round_preplan_enabled", true);
+    this->declare_parameter<int>("external_second_round_preplan_top_variant_count", 2);
+    this->declare_parameter<double>("external_second_round_preplan_time_sec", 0.75);
+    this->declare_parameter<int>("external_second_round_preplan_attempts", 2);
+    this->declare_parameter<double>("external_second_round_preplan_weight", 0.20);
     this->declare_parameter<double>("pregrasp_backoff_m", 0.10);
     this->declare_parameter<double>("pregrasp_lift_m", 0.08);
     this->declare_parameter<double>("grasp_backoff_m", 0.04);
@@ -581,6 +597,19 @@ private:
       this->get_parameter("external_second_round_joint_weight").as_double();
     external_second_round_pregrasp_weight_ =
       this->get_parameter("external_second_round_pregrasp_weight").as_double();
+    external_second_round_preplan_enabled_ =
+      this->get_parameter("external_second_round_preplan_enabled").as_bool();
+    external_second_round_preplan_top_variant_count_ = std::max(
+      1,
+      static_cast<int>(
+        this->get_parameter("external_second_round_preplan_top_variant_count").as_int()));
+    external_second_round_preplan_time_sec_ = std::max(
+      0.05, this->get_parameter("external_second_round_preplan_time_sec").as_double());
+    external_second_round_preplan_attempts_ = std::max(
+      1,
+      static_cast<int>(this->get_parameter("external_second_round_preplan_attempts").as_int()));
+    external_second_round_preplan_weight_ = std::max(
+      0.0, this->get_parameter("external_second_round_preplan_weight").as_double());
     pregrasp_backoff_m_ = this->get_parameter("pregrasp_backoff_m").as_double();
     pregrasp_lift_m_ = this->get_parameter("pregrasp_lift_m").as_double();
     grasp_backoff_m_ = this->get_parameter("grasp_backoff_m").as_double();
@@ -2960,27 +2989,26 @@ private:
     nominal_approach_direction.normalize();
 
     const double grasp_z = external_metadata->grasp_center[2];
-    const double current_z = current_pose.position.z;
     const double table_top_z =
       (table_pose_xyz_.size() >= 3 ? table_pose_xyz_[2] : 0.38) +
       0.5 * (table_size_m_.size() >= 3 ? table_size_m_[2] : 0.04);
     const bool table_supported_target = (grasp_z - table_top_z) <= 0.12;
-    const double nominal_standoff = std::clamp(nominal_pregrasp_offset, 0.07, 0.16);
+    const double nominal_standoff = std::clamp(nominal_pregrasp_offset, 0.05, 0.12);
     const double safe_standoff = std::clamp(
-      std::max(nominal_standoff * 1.20, nominal_standoff + 0.025),
-      nominal_standoff + 0.01,
-      0.19);
+      std::max(nominal_standoff * 1.10, nominal_standoff + 0.015),
+      nominal_standoff + 0.008,
+      0.145);
     const double nominal_min_z = table_supported_target ?
-      std::max(grasp_z + 0.030, table_top_z + 0.020) :
-      (grasp_z - 0.030);
+      std::max(grasp_z + 0.022, table_top_z + 0.018) :
+      (grasp_z - 0.020);
     const double nominal_max_z = table_supported_target ?
-      (grasp_z + 0.070) :
-      (grasp_z + 0.110);
+      (grasp_z + 0.055) :
+      (grasp_z + 0.080);
     const double safe_vertical_clearance = std::max(
       {
-        candidate.pregrasp[2] + 0.015,
-        grasp_z + 0.038,
-        current_z - 0.005,
+        candidate.pregrasp[2] + 0.008,
+        grasp_z + 0.028,
+        table_top_z + 0.022,
       });
 
     const auto safe_orientation =
@@ -3006,7 +3034,7 @@ private:
         {
           grasp_center.x() + nominal_approach_direction.x() * safe_standoff,
           grasp_center.y() + nominal_approach_direction.y() * safe_standoff,
-          std::clamp(safe_vertical_clearance, nominal_min_z + 0.008, nominal_max_z + 0.020),
+          std::clamp(safe_vertical_clearance, nominal_min_z + 0.004, nominal_max_z + 0.010),
         },
         candidate.grasp,
         safe_orientation,
@@ -4950,6 +4978,87 @@ private:
     return combined;
   }
 
+  ExternalSecondRoundPreplanResult evaluate_external_second_round_preplan(
+    moveit::planning_interface::MoveGroupInterface & planning_group,
+    const moveit::core::RobotStatePtr & current_start_state,
+    const std::vector<JointConstraintAttempt> & attempts,
+    const ReducedOrientationConstraint & reduced_orientation_constraint,
+    const std::vector<PregraspVariant> & variants)
+  {
+    ExternalSecondRoundPreplanResult result;
+    if (
+      !external_second_round_preplan_enabled_ || !current_start_state || attempts.empty() ||
+      variants.empty())
+    {
+      return result;
+    }
+
+    const std::size_t variant_limit = std::min<std::size_t>(
+      variants.size(),
+      static_cast<std::size_t>(std::max(external_second_round_preplan_top_variant_count_, 1)));
+    result.samples = static_cast<int>(variant_limit);
+    std::vector<std::pair<double, std::size_t>> ranked_hits;
+    ranked_hits.reserve(variant_limit);
+
+    for (std::size_t variant_index = 0; variant_index < variant_limit; ++variant_index) {
+      const auto & variant = variants[variant_index];
+      double best_duration_sec = std::numeric_limits<double>::infinity();
+      bool planned = false;
+
+      for (const auto & attempt : attempts) {
+        moveit::planning_interface::MoveGroupInterface::Plan pregrasp_plan;
+        if (!plan_pose_target_attempt(
+              planning_group,
+              variant.pregrasp,
+              variant.pregrasp_orientation,
+              attempt,
+              pregrasp_plan,
+              current_start_state,
+              pregrasp_position_only_target_,
+              external_second_round_preplan_time_sec_,
+              external_second_round_preplan_attempts_,
+              reduced_orientation_constraint))
+        {
+          continue;
+        }
+
+        planned = true;
+        best_duration_sec = std::min(best_duration_sec, compute_plan_duration_sec(pregrasp_plan));
+        break;
+      }
+
+      if (!planned) {
+        continue;
+      }
+
+      result.has_hit = true;
+      ++result.hits;
+      const double duration_score = clamp01(
+        1.0 - (best_duration_sec / std::max(0.25, external_second_round_preplan_time_sec_ * 1.5)));
+      const double success_score = clamp01(0.70 + 0.30 * duration_score);
+      ranked_hits.emplace_back(success_score, variant_index);
+    }
+
+    std::sort(
+      ranked_hits.begin(),
+      ranked_hits.end(),
+      [](const auto & lhs, const auto & rhs) {
+        return lhs.first > rhs.first;
+      });
+
+    for (const auto & [quality, variant_index] : ranked_hits) {
+      result.ranked_success_variant_indices.push_back(variant_index);
+      result.score = std::max(result.score, quality);
+    }
+
+    if (result.samples > 0) {
+      const double hit_ratio = static_cast<double>(result.hits) / static_cast<double>(result.samples);
+      result.score = clamp01(0.60 * hit_ratio + 0.40 * result.score);
+    }
+
+    return result;
+  }
+
   ExternalSecondRoundScore compute_external_second_round_score(
     moveit::planning_interface::MoveGroupInterface & planning_group,
     const moveit::core::RobotStatePtr & current_start_state,
@@ -5202,6 +5311,79 @@ private:
            << " p_plan=" << entry.pregrasp_plan_failures
            << " p_state=" << entry.pregrasp_end_state_failures
            << "]";
+    return stream.str();
+  }
+
+  std::string format_joint_positions_deg(
+    const std::vector<std::string> & joint_names,
+    const std::vector<double> & positions) const
+  {
+    std::ostringstream stream;
+    stream << "{";
+    const std::size_t count = std::min(joint_names.size(), positions.size());
+    for (std::size_t index = 0; index < count; ++index) {
+      if (index > 0) {
+        stream << ", ";
+      }
+      stream << joint_names[index] << "=" << std::fixed << std::setprecision(1)
+             << positions[index] * 180.0 / M_PI;
+    }
+    stream << "}";
+    return stream.str();
+  }
+
+  std::string format_plan_trajectory_summary(
+    const std::string & label,
+    const moveit::planning_interface::MoveGroupInterface::Plan & plan) const
+  {
+    const auto & trajectory = plan.trajectory.joint_trajectory;
+    std::ostringstream stream;
+    stream << label << " points=" << trajectory.points.size();
+    if (trajectory.points.empty()) {
+      return stream.str();
+    }
+
+    const auto format_index = [&](std::size_t index) {
+        return format_joint_positions_deg(
+          trajectory.joint_names,
+          trajectory.points[index].positions);
+      };
+
+    stream << " start=" << format_index(0);
+    if (trajectory.points.size() > 2) {
+      stream << " mid=" << format_index(trajectory.points.size() / 2);
+    }
+    if (trajectory.points.size() > 1) {
+      stream << " end=" << format_index(trajectory.points.size() - 1);
+    }
+
+    const auto append_joint_delta = [&](const std::string & joint_name) {
+        if (joint_name.empty()) {
+          return;
+        }
+        const auto joint_it = std::find(
+          trajectory.joint_names.begin(),
+          trajectory.joint_names.end(),
+          joint_name);
+        if (joint_it == trajectory.joint_names.end()) {
+          return;
+        }
+        const std::size_t joint_index = static_cast<std::size_t>(
+          std::distance(trajectory.joint_names.begin(), joint_it));
+        if (joint_index >= trajectory.points.front().positions.size() ||
+          joint_index >= trajectory.points.back().positions.size())
+        {
+          return;
+        }
+        stream << " " << joint_name << "=" << std::fixed << std::setprecision(1)
+               << trajectory.points.front().positions[joint_index] * 180.0 / M_PI
+               << "->"
+               << trajectory.points.back().positions[joint_index] * 180.0 / M_PI;
+      };
+
+    append_joint_delta(lock_joint_name_);
+    append_joint_delta(secondary_joint_name_);
+    append_joint_delta(wrist_joint_name_);
     return stream.str();
   }
 
@@ -6242,8 +6424,69 @@ private:
               }
             }
 
+            const ReducedOrientationConstraint reduced_orientation_constraint =
+              build_external_reduced_orientation_constraint();
+            const auto preplan_result = evaluate_external_second_round_preplan(
+              planning_group,
+              current_start_state,
+              attempts,
+              reduced_orientation_constraint,
+              selected_planning_variants);
+            combined_score.preplan_score = preplan_result.score;
+
+            if (!preplan_result.ranked_success_variant_indices.empty()) {
+              std::vector<PregraspVariant> reordered_variants;
+              reordered_variants.reserve(selected_planning_variants.size());
+              for (const std::size_t ranked_index : preplan_result.ranked_success_variant_indices) {
+                if (ranked_index >= selected_planning_variants.size()) {
+                  continue;
+                }
+                reordered_variants.push_back(selected_planning_variants[ranked_index]);
+              }
+              for (std::size_t variant_index = 0; variant_index < selected_planning_variants.size(); ++variant_index) {
+                const auto duplicate_it = std::find_if(
+                  reordered_variants.begin(),
+                  reordered_variants.end(),
+                  [&](const PregraspVariant & existing_variant) {
+                    const auto & candidate_variant = selected_planning_variants[variant_index];
+                    const double pregrasp_distance = std::sqrt(
+                      std::pow(existing_variant.pregrasp[0] - candidate_variant.pregrasp[0], 2) +
+                      std::pow(existing_variant.pregrasp[1] - candidate_variant.pregrasp[1], 2) +
+                      std::pow(existing_variant.pregrasp[2] - candidate_variant.pregrasp[2], 2));
+                    const double grasp_distance = std::sqrt(
+                      std::pow(existing_variant.grasp[0] - candidate_variant.grasp[0], 2) +
+                      std::pow(existing_variant.grasp[1] - candidate_variant.grasp[1], 2) +
+                      std::pow(existing_variant.grasp[2] - candidate_variant.grasp[2], 2));
+                    return pregrasp_distance < 0.004 && grasp_distance < 0.002;
+                  });
+                if (duplicate_it == reordered_variants.end()) {
+                  reordered_variants.push_back(selected_planning_variants[variant_index]);
+                }
+              }
+              selected_planning_variants = std::move(reordered_variants);
+            }
+
+            if (external_second_round_preplan_weight_ > 1e-6) {
+              const double total_weight = std::max(
+                1e-6,
+                external_second_round_region_weight_ +
+                external_second_round_deviation_weight_ +
+                external_second_round_joint_weight_ +
+                external_second_round_pregrasp_weight_ +
+                external_second_round_preplan_weight_);
+              combined_score.total_score =
+                (
+                external_second_round_region_weight_ * combined_score.region_score +
+                external_second_round_deviation_weight_ * combined_score.deviation_score +
+                external_second_round_joint_weight_ * combined_score.joint_score +
+                external_second_round_pregrasp_weight_ * combined_score.pregrasp_score +
+                external_second_round_preplan_weight_ * combined_score.preplan_score) /
+                total_weight;
+            }
+
             second_round_scores[job_index] = combined_score;
             job.second_round_score = combined_score.total_score;
+            job.second_round_preplan_score = combined_score.preplan_score;
             job.second_round_hits = combined_score.hits;
             job.second_round_samples = combined_score.samples;
             job.second_round_has_hit = combined_score.has_hit;
@@ -6319,6 +6562,8 @@ private:
           score_stream << " [" << jobs[index].candidate_index
                        << " score=" << std::fixed << std::setprecision(2) << jobs[index].second_round_score
                        << " hits=" << jobs[index].second_round_hits << "/" << jobs[index].second_round_samples
+                       << " preplan=" << std::fixed << std::setprecision(2)
+                       << jobs[index].second_round_preplan_score
                        << "]";
         }
         RCLCPP_INFO(this->get_logger(), "%s", score_stream.str().c_str());
@@ -6366,10 +6611,10 @@ private:
         }
       }
 
-      std::vector<ExternalCandidateEvaluationResult> results(jobs.size());
-      const std::size_t worker_count = effective_parallel_worker_count(jobs.size());
-      if (worker_count > 1) {
-        std::atomic_size_t next_job{0};
+    std::vector<ExternalCandidateEvaluationResult> results(jobs.size());
+    const std::size_t worker_count = effective_parallel_worker_count(jobs.size());
+    if (worker_count > 1) {
+      std::atomic_size_t next_job{0};
         std::vector<std::future<void>> futures;
         futures.reserve(worker_count);
         for (std::size_t worker_index = 0; worker_index < worker_count; ++worker_index) {
@@ -6420,6 +6665,22 @@ private:
           (result.best_option.has_value() && result.best_option->score > best_option->score))
         {
           best_option = result.best_option;
+        }
+        if (result.best_option.has_value()) {
+          const auto & option = result.best_option.value();
+          RCLCPP_INFO(
+            this->get_logger(),
+            "external feasible candidate: candidate=%zu label=%s score=%.2f | %s | %s",
+            option.candidate_index,
+            jobs[job_index].candidate_label.c_str(),
+            option.score,
+            format_plan_trajectory_summary("stage", option.stage_plan).c_str(),
+            format_plan_trajectory_summary("pregrasp", option.pregrasp_plan).c_str());
+        } else {
+          RCLCPP_INFO(
+            this->get_logger(),
+            "external rejected candidate: %s",
+            format_external_debug_entry(result.debug_info).c_str());
         }
         log_planning_progress(
           "planning/external",
@@ -6738,6 +6999,11 @@ private:
   double external_second_round_deviation_weight_{0.25};
   double external_second_round_joint_weight_{0.15};
   double external_second_round_pregrasp_weight_{0.15};
+  bool external_second_round_preplan_enabled_{true};
+  int external_second_round_preplan_top_variant_count_{2};
+  double external_second_round_preplan_time_sec_{0.75};
+  int external_second_round_preplan_attempts_{2};
+  double external_second_round_preplan_weight_{0.20};
   double pregrasp_backoff_m_{0.10};
   double pregrasp_lift_m_{0.08};
   double grasp_backoff_m_{0.04};

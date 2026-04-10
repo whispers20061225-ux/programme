@@ -164,3 +164,31 @@ export async function postOpenDebugViews(): Promise<UiState> {
   });
   return response.state;
 }
+
+export async function postTactileMode(useHardware: boolean): Promise<UiState> {
+  const response = await requestJson<{ ok: boolean; state: UiState }>("/api/tactile/mode", {
+    method: "POST",
+    body: JSON.stringify({
+      use_hardware: useHardware,
+      mode: useHardware ? "hardware" : "simulation",
+    }),
+  });
+  return response.state;
+}
+
+export async function postTactileTare(): Promise<UiState> {
+  const response = await requestJson<{ ok: boolean; state: UiState }>("/api/tactile/tare", {
+    method: "POST",
+  });
+  return response.state;
+}
+
+export async function postClearTactileTare(): Promise<UiState> {
+  const response = await requestJson<{ ok: boolean; state: UiState }>(
+    "/api/tactile/tare/clear",
+    {
+      method: "POST",
+    },
+  );
+  return response.state;
+}

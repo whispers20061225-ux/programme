@@ -20,6 +20,9 @@ class TactileSnapshot:
     forces_fx: List[float]
     forces_fy: List[float]
     forces_fz: List[float]
+    torques_tx: List[float]
+    torques_ty: List[float]
+    torques_tz: List[float]
 
 
 class TactileUiSubscriber(Node):
@@ -73,6 +76,9 @@ class TactileUiSubscriber(Node):
             forces_fx=list(msg.forces_fx),
             forces_fy=list(msg.forces_fy),
             forces_fz=list(msg.forces_fz),
+            torques_tx=list(msg.torques_tx),
+            torques_ty=list(msg.torques_ty),
+            torques_tz=list(msg.torques_tz),
         )
 
         with self._lock:

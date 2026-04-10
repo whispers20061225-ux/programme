@@ -1,0 +1,95 @@
+tactile_web_gateway:
+  ros__parameters:
+    host: "127.0.0.1"
+    port: 8765
+    frontend_dist_dir: "/home/whispers/programme/ros2_ws/src/tactile_web_bridge/frontend/dist"
+    live_state_period_sec: 0.15
+    tactile_topic: "/tactile/raw"
+    health_topic: "/system/health"
+    arm_state_topic: "/arm/state"
+    task_goal_topic: "/task/goal"
+    task_execution_status_topic: "/task/execution_status"
+    tactile_mode_service: "/tactile/use_hardware"
+    gripper_profile_topic: "/control/gripper/profile_json"
+    prompt_topic: "/qwen/user_prompt"
+    semantic_task_topic: "/qwen/semantic_task"
+    semantic_result_topic: "/qwen/semantic_result"
+    color_topic: "/camera/camera/color/image_raw"
+    detection_result_topic: "/perception/detection_result"
+    detection_debug_topic: "/perception/detection_debug"
+    detection_debug_overlay_topic: "/perception/detection_debug_overlay"
+    target_locked_topic: "/sim/perception/target_locked"
+    pick_active_topic: "/sim/task/pick_active"
+    pick_status_topic: "/sim/task/pick_status"
+    candidate_grasp_proposal_array_topic: "/grasp/candidate_grasp_proposals"
+    grasp_backend_debug_topic: "/grasp/backend_debug"
+    grasp_overlay_topic: "/grasp/ggcnn/grasp_overlay"
+    execute_task_action: "/task/execute_task"
+    execute_pick_service: "/task/execute_pick"
+    reset_pick_session_service: "/task/reset_pick_session"
+    tactile_tare_service: "/tactile/tare"
+    tactile_clear_tare_service: "/tactile/clear_tare"
+    tactile_freeze_warn_repeats: 18
+    tactile_freeze_warn_sec: 1.4
+    tactile_freeze_force_threshold: 1.0
+    control_arm_enable_service: "/control/arm/enable"
+    control_arm_move_joints_service: "/control/arm/move_joints"
+    scene_reset_service: "/sim/world/reset"
+    scene_set_pose_service: "/sim/world/set_pose"
+    scene_pose_info_topic: "/sim/world/pose/info"
+    scene_target_model_name: "target_cylinder"
+    scene_reset_use_world_reset: true
+    scene_reset_delay_sec: 0.75
+    scene_reset_return_home_after_reset: false
+    return_home_joint_ids: [1, 2, 3, 4, 5, 6]
+    return_home_joint_angles_deg: [3.0, -58.0, 89.405064, 96.0, 0.0, -68.754936]
+    return_home_duration_ms: 3500
+    return_home_wait_for_completion: true
+    startup_prepare_home: false
+    startup_prepare_home_delay_sec: 0.0
+    dialog_use_visual_context: false
+    dialog_visual_input_mode: "off"
+    dialog_default_reply_language: "zh"
+    default_task: "pick"
+    default_target_hint: "object"
+    default_constraints: ["parallel_gripper"]
+
+stm32_bridge_node:
+  ros__parameters:
+    publish_rate_hz: 25.0
+    requested_mode: "hardware"
+    serial_port: "tcp://windows-host:19024"
+    serial_baudrate: 115200
+    serial_timeout: 1.0
+    serial_startup_delay_sec: 1.0
+    command_timeout_sec: 1.2
+    device_addr: 1
+    sensor_layout: "m2020_3x3"
+    totals_command_template: "TREADX {device_addr} 1008 3"
+    taxels_command_template: "TREADX {device_addr} 1038 27"
+    grid_rows: 3
+    grid_cols: 3
+    # Disable startup auto-baseline on the real tactile test chain.
+    # If the sensor is already under load during startup, the old logic
+    # learns that load as the zero point and then clips subsequent presses.
+    baseline_enabled: false
+    baseline_frames: 16
+    median_window: 3
+    ema_alpha: 0.30
+    clip_negative_heatmap: true
+    contact_threshold: 3.0
+    contact_debounce_frames: 2
+    simulation_rows: 3
+    simulation_cols: 3
+    tactile_topic: "/tactile/raw"
+    health_topic: "/system/health"
+    mode_service: "/tactile/use_hardware"
+    tare_service: "/tactile/tare"
+    clear_tare_service: "/tactile/clear_tare"
+    reconnect_interval_sec: 2.0
+
+grasp_profile_node:
+  ros__parameters:
+    task_goal_topic: "/task/goal"
+    profile_topic: "/control/gripper/profile_json"
+    health_topic: "/system/health"

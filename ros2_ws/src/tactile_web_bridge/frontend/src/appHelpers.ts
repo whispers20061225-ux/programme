@@ -20,6 +20,9 @@ export type BusyAction =
   | "return-home"
   | "scene-reset"
   | "debug-open"
+  | "tactile-mode"
+  | "tactile-tare"
+  | "tactile-clear-tare"
   | null;
 export type InterventionState = "idle" | "draft" | "applied";
 export type PillTone = UiLevel | "success" | "neutral";
@@ -96,7 +99,66 @@ export const DEFAULT_STATE: UiState = {
     backend_debug: {},
     updated_at: 0,
   },
-  tactile: { rows: 0, cols: 0, forces: [], forces_fx: [], forces_fy: [], forces_fz: [], updated_at: 0 },
+  tactile: {
+    rows: 0,
+    cols: 0,
+    sequence_id: 0,
+    frame_id: "",
+    forces: [],
+    forces_fx: [],
+    forces_fy: [],
+    forces_fz: [],
+    torques_tx: [],
+    torques_ty: [],
+    torques_tz: [],
+    total_fx: 0,
+    total_fy: 0,
+    total_fz: 0,
+    contact_active: false,
+    contact_score: 0,
+    baseline_ready: false,
+    sensor_layout: "",
+    requested_mode: "simulation",
+    active_mode: "simulation",
+    source_name: "",
+    source_connected: false,
+    device_addr: 0,
+    function_code: 0,
+    start_addr: 0,
+    returned_data_len_hint: 0,
+    frame_len_declared: 0,
+    payload_len_observed: 0,
+    payload_value_count: 0,
+    transport_rate_hz: 0,
+    publish_rate_hz: 0,
+    lrc_ok: false,
+    parser_state: "",
+    mapping_state: "",
+    status_text: "",
+    raw_frame_hex: "",
+    tare_active: false,
+    tare_updated_at: 0,
+    tare_message: "",
+    freeze_warning: false,
+    freeze_duration_sec: 0,
+    freeze_repeat_count: 0,
+    stamp_sec: 0,
+    updated_at: 0,
+  },
+  gripper_profile: {
+    profile_id: "",
+    target_label: "",
+    object_type: "",
+    source: "",
+    kp: 0,
+    kd: 0,
+    target_force: 0,
+    contact_threshold: 0,
+    safety_max: 0,
+    confidence: 0,
+    updated_at: 0,
+    raw: {},
+  },
   health: { healthy: true, issues: [], latest: [], arm_state: {}, updated_at: 0 },
   logs: { stepper_phase: "idle", intervention_badge: false, events: [], updated_at: 0 },
   ui_feedback: { events: [], last_event_id: 0 },
@@ -123,9 +185,11 @@ export function normalizeUiState(next: UiState | Partial<UiState> | null | undef
   const semantic = (isRecord(root.semantic) ? root.semantic : {}) as Partial<UiState["semantic"]>;
   const vision = (isRecord(root.vision) ? root.vision : {}) as Partial<UiState["vision"]>;
   const execution = (isRecord(root.execution) ? root.execution : {}) as Partial<UiState["execution"]>;
+  const tactile = (isRecord(root.tactile) ? root.tactile : {}) as Partial<UiState["tactile"]>;
   const health = (isRecord(root.health) ? root.health : {}) as Partial<UiState["health"]>;
   const logs = (isRecord(root.logs) ? root.logs : {}) as Partial<UiState["logs"]>;
   const uiFeedback = (isRecord(root.ui_feedback) ? root.ui_feedback : {}) as Partial<UiState["ui_feedback"]>;
+  const gripperProfile = (isRecord(root.gripper_profile) ? root.gripper_profile : {}) as Partial<NonNullable<UiState["gripper_profile"]>>;
   const defaultDialog = DEFAULT_STATE.dialog ?? {
     session_id: "",
     mode: "auto",
@@ -196,7 +260,33 @@ export function normalizeUiState(next: UiState | Partial<UiState> | null | undef
     },
     tactile: {
       ...DEFAULT_STATE.tactile,
-      ...(isRecord(root.tactile) ? root.tactile : {}),
+      ...tactile,
+      forces: Array.isArray(tactile.forces)
+        ? tactile.forces as number[]
+        : DEFAULT_STATE.tactile.forces,
+      forces_fx: Array.isArray(tactile.forces_fx)
+        ? tactile.forces_fx as number[]
+        : DEFAULT_STATE.tactile.forces_fx,
+      forces_fy: Array.isArray(tactile.forces_fy)
+        ? tactile.forces_fy as number[]
+        : DEFAULT_STATE.tactile.forces_fy,
+      forces_fz: Array.isArray(tactile.forces_fz)
+        ? tactile.forces_fz as number[]
+        : DEFAULT_STATE.tactile.forces_fz,
+      torques_tx: Array.isArray(tactile.torques_tx)
+        ? tactile.torques_tx as number[]
+        : DEFAULT_STATE.tactile.torques_tx,
+      torques_ty: Array.isArray(tactile.torques_ty)
+        ? tactile.torques_ty as number[]
+        : DEFAULT_STATE.tactile.torques_ty,
+      torques_tz: Array.isArray(tactile.torques_tz)
+        ? tactile.torques_tz as number[]
+        : DEFAULT_STATE.tactile.torques_tz,
+    },
+    gripper_profile: {
+      ...DEFAULT_STATE.gripper_profile,
+      ...gripperProfile,
+      raw: isRecord(gripperProfile.raw) ? gripperProfile.raw : DEFAULT_STATE.gripper_profile?.raw,
     },
     health: {
       ...DEFAULT_STATE.health,

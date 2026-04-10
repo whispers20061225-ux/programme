@@ -40,7 +40,7 @@ class FakeTactilePublisher(Node):
         )
 
     def _publish_tactile(self) -> None:
-        forces, fx, fy, fz = self._generate_frame()
+        forces, fx, fy, fz, tx, ty, tz = self._generate_frame()
 
         msg = TactileRaw()
         msg.header.stamp = self.get_clock().now().to_msg()
@@ -53,6 +53,9 @@ class FakeTactilePublisher(Node):
         msg.forces_fx = fx
         msg.forces_fy = fy
         msg.forces_fz = fz
+        msg.torques_tx = tx
+        msg.torques_ty = ty
+        msg.torques_tz = tz
         self.tactile_pub.publish(msg)
 
         self._sequence += 1
@@ -70,12 +73,17 @@ class FakeTactilePublisher(Node):
         msg.memory_percent = 0.0
         self.health_pub.publish(msg)
 
-    def _generate_frame(self) -> Tuple[List[float], List[float], List[float], List[float]]:
+    def _generate_frame(
+        self,
+    ) -> Tuple[List[float], List[float], List[float], List[float], List[float], List[float], List[float]]:
         count = self.rows * self.cols
         forces: List[float] = []
         fx: List[float] = []
         fy: List[float] = []
         fz: List[float] = []
+        tx: List[float] = []
+        ty: List[float] = []
+        tz: List[float] = []
 
         for idx in range(count):
             row = idx // self.cols
@@ -96,13 +104,19 @@ class FakeTactilePublisher(Node):
             force_z = max(0.0, base + n)
             force_x = 0.15 * math.sin(self._phase + x * 3.0) + random.gauss(0.0, self.noise_sigma / 3.0)
             force_y = 0.15 * math.cos(self._phase + y * 3.0) + random.gauss(0.0, self.noise_sigma / 3.0)
+            torque_x = 0.05 * force_y + random.gauss(0.0, self.noise_sigma / 5.0)
+            torque_y = -0.05 * force_x + random.gauss(0.0, self.noise_sigma / 5.0)
+            torque_z = 0.02 * (x - y) * force_z + random.gauss(0.0, self.noise_sigma / 5.0)
 
             fz.append(float(force_z))
             fx.append(float(force_x))
             fy.append(float(force_y))
+            tx.append(float(torque_x))
+            ty.append(float(torque_y))
+            tz.append(float(torque_z))
             forces.append(float(force_z))
 
-        return forces, fx, fy, fz
+        return forces, fx, fy, fz, tx, ty, tz
 
 
 def main(args=None) -> None:

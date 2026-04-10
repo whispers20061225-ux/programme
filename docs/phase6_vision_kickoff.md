@@ -15,8 +15,8 @@ This file tracks phase 6.1 scope: wiring RealSense vision into ROS2 before Gazeb
   - publishes `tactile_interfaces/msg/SystemHealth` to `/system/health`
   - reports stale/ok state for color/depth/camera_info streams
 - Added phase 6 vision bringup:
-  - `ros2_ws/src/tactile_bringup/launch/phase6_vision.launch.py`
-  - `ros2_ws/src/tactile_bringup/config/phase6_vision.yaml`
+  - `ros2_ws/src/tactile_bringup/launch/vision_pipeline.launch.py`
+  - `ros2_ws/src/tactile_bringup/config/vision_pipeline.yaml`
 
 ## Important hardware note
 
@@ -32,13 +32,13 @@ cd /home/zhuyiwei/programme/programme/ros2_ws
 source /opt/ros/jazzy/setup.bash
 colcon build --symlink-install --packages-select tactile_vision tactile_bringup
 source install/setup.bash
-ros2 launch tactile_bringup phase6_vision.launch.py
+ros2 launch tactile_bringup vision_pipeline.launch.py
 ```
 
 If you already started `realsense2_camera` elsewhere, disable duplicated camera launch:
 
 ```bash
-ros2 launch tactile_bringup phase6_vision.launch.py start_realsense:=false
+ros2 launch tactile_bringup vision_pipeline.launch.py start_realsense:=false
 ```
 
 Terminal B:

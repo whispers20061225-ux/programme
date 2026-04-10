@@ -71,7 +71,7 @@ class TactileSimNode(Node):
 
     def _publish_tactile(self) -> None:
         count = self.rows * self.cols
-        forces, fx, fy, fz = self._generate_simulated_forces(count)
+        forces, fx, fy, fz, tx, ty, tz = self._generate_simulated_forces(count)
 
         msg = TactileRaw()
         msg.header.stamp = self.get_clock().now().to_msg()
@@ -84,6 +84,9 @@ class TactileSimNode(Node):
         msg.forces_fx = fx
         msg.forces_fy = fy
         msg.forces_fz = fz
+        msg.torques_tx = tx
+        msg.torques_ty = ty
+        msg.torques_tz = tz
 
         self._sequence_id += 1
         self._phase += self.phase_speed
@@ -95,6 +98,9 @@ class TactileSimNode(Node):
         fx = []
         fy = []
         fz = []
+        tx = []
+        ty = []
+        tz = []
 
         sigma = max(0.8, min(self.rows, self.cols) * 0.55)
         center_x = (self.cols - 1) * 0.5 + (self.cols - 1) * 0.35 * math.sin(self._phase)
@@ -124,13 +130,19 @@ class TactileSimNode(Node):
                 self.lateral_force_scale * dx * gaussian_peak
                 + random.gauss(0.0, self.noise_std * 0.5)
             )
+            torque_x = 0.06 * tangential_y + random.gauss(0.0, self.noise_std * 0.08)
+            torque_y = -0.06 * tangential_x + random.gauss(0.0, self.noise_std * 0.08)
+            torque_z = 0.025 * (dx - dy) * gaussian_peak + random.gauss(0.0, self.noise_std * 0.08)
 
             fz.append(float(normal_force))
             fx.append(float(tangential_x))
             fy.append(float(tangential_y))
+            tx.append(float(torque_x))
+            ty.append(float(torque_y))
+            tz.append(float(torque_z))
             forces.append(float(normal_force))
 
-        return forces, fx, fy, fz
+        return forces, fx, fy, fz, tx, ty, tz
 
     def _publish_health(self) -> None:
         msg = SystemHealth()

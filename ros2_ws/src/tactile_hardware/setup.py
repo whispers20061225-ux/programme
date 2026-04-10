@@ -21,6 +21,7 @@ setup(
     entry_points={
         "console_scripts": [
             "tactile_sensor_node = tactile_hardware.tactile_sensor_node:main",
+            "stm32_bridge_node = tactile_hardware.stm32_bridge_node:main",
             "arm_driver_node = tactile_hardware.arm_driver_node:main",
         ],
     },

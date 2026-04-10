@@ -133,7 +133,7 @@
 
 相关参数入口：
 
-- [phase8_modular_grasp.yaml](../ros2_ws/src/tactile_bringup/config/phase8_modular_grasp.yaml)
+- [programme_grasp_stack.yaml](../ros2_ws/src/tactile_bringup/config/programme_grasp_stack.yaml)
 
 你当前调试时最容易碰到的失败，也通常在这里：
 
